@@ -194,7 +194,18 @@
       gekauft · Gebühren: Kauf <input id="dFeeBuy" type="number" step="0.01">
       + Verkauf <input id="dFeeSell" type="number" step="0.01">
       <span id="dSave"></span>
-      <button class="upd" id="dDel" type="button" hidden style="margin-left:auto">Aktie entfernen</button>
+      <button class="upd" id="dSell" type="button" hidden style="margin-left:auto">Verkauf</button>
+      <button class="upd" id="dDel" type="button" hidden>Aktie entfernen</button>
+    </div>
+    <div class="setup" id="sellForm" hidden>
+      <b style="color:var(--text)">Verkauf:</b>
+      <input id="sQty" type="number" step="1" placeholder="Stück"> Stück zu
+      <input id="sPrice" type="number" step="0.01" placeholder="Kurs"> je Aktie · Gebühr
+      <input id="sFee" type="number" step="0.01" title="Vorschlag: 0,3 %, mindestens 15 €">
+      am <input id="sTime" type="datetime-local" step="1" style="width:auto">
+      <button class="upd" id="sOk" type="button">Verkaufen</button>
+      <button class="upd" id="sCancel" type="button">Abbrechen</button>
+      <span id="sMsg"></span>
     </div>
   </div>
 
@@ -241,6 +252,7 @@ const store = { get: k => { try { return localStorage.getItem(k); } catch { retu
 // Aktienliste und Kaufdaten liegen auf dem Server (dCost = Gesamtpreis ohne Gebühren)
 let STOCKS = {}, SYMS = [];
 let START_CAPITAL = 50000;   // fiktives Startgeld in €, kommt vom Server
+let REALIZED = { pl: 0, basis: 0, fees: 0, count: 0 };   // abgeschlossene Verkäufe in €
 const SURGE_PCT = 0.5, SURGE_MIN = 5;   // grün aufleuchten ab +0,5 % in 5 Minuten
 // Ansicht: ?embed=1&sym=X (Kachel im Split), sonst Split oder Einzelaktie (gemerkt)
 const qs = new URLSearchParams(location.search);
@@ -264,6 +276,8 @@ function lockInputs() {
   $('dEdit').classList.toggle('on', editPw !== null);
   $('dEdit').textContent = editPw !== null ? 'Fertig' : '🔒 Bearbeiten';
   $('dDel').hidden = !editing();
+  $('dSell').hidden = !editing();
+  if (!editing()) $('sellForm').hidden = true;
   document.querySelector('#tabs button.add')?.toggleAttribute('hidden', !editing());
   if (!editing()) $('addCard').hidden = true;
 }
@@ -272,6 +286,7 @@ function applyStocks(j) {
   const changed = Object.keys(j.stocks).join() !== SYMS.join();
   STOCKS = j.stocks; SYMS = Object.keys(STOCKS);
   if (j.start_capital != null) START_CAPITAL = j.start_capital;
+  if (j.realized) REALIZED = j.realized;
   if (!STOCKS[sym]) { sym = SYMS[0] || ''; lastPrice = null; }
   if (changed) { buildTabs(); $('split').innerHTML = ''; showSym(); }
   return changed;
@@ -609,14 +624,17 @@ function renderTotal() {
   const cell = (k, v, cls = '') => `<div><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
   const ud = v => v >= 0 ? 'up' : 'down';
   if (view === 'split') document.title = `Depot ${eur(value)} ${pl >= 0 ? '▲' : '▼'}`;
-  const cash = START_CAPITAL - paid;
+  // realisierte Verkäufe: Gewinn fließt ins verfügbare Geld und in den Gesamtgewinn
+  pl += REALIZED.pl; fees += REALIZED.fees;
+  const cash = START_CAPITAL - paid + REALIZED.pl, invested = paid + REALIZED.basis;
   $('total').innerHTML =
     cell(`Gesamtvermögen (Start ${eur(START_CAPITAL)})`, eur(cash + value)) +
     cell('Verfügbares Geld', eur(cash)) +
     cell('Depotwert', eur(value)) +
-    cell('Gesamt Gewinn / Verlust', signed(pl, eur) + ` <span style="font-size:14px">(${pct(paid ? pl / paid * 100 : 0)})</span>`, ud(pl)) +
-    cell('Gewinn / Verlust ohne Gebühren', signed(pl + fees, eur) + ` <span style="font-size:14px">(${pct(paid - fees ? (pl + fees) / (paid - fees) * 100 : 0)})</span>`, ud(pl + fees)) +
-    cell('Bezahlt inkl. Gebühren', eur(paid));
+    cell('Gesamt Gewinn / Verlust', signed(pl, eur) + ` <span style="font-size:14px">(${pct(invested ? pl / invested * 100 : 0)})</span>`, ud(pl)) +
+    cell('Gewinn / Verlust ohne Gebühren', signed(pl + fees, eur) + ` <span style="font-size:14px">(${pct(invested - fees ? (pl + fees) / (invested - fees) * 100 : 0)})</span>`, ud(pl + fees)) +
+    cell('Bezahlt inkl. Gebühren', eur(paid)) +
+    (REALIZED.count ? cell(`Realisiert (${REALIZED.count} ${REALIZED.count > 1 ? 'Verkäufe' : 'Verkauf'})`, signed(REALIZED.pl, eur), ud(REALIZED.pl)) : '');
 }
 
 // ---------- Aktie hinzufügen / entfernen ----------
@@ -648,6 +666,40 @@ $('dDel').addEventListener('click', async () => {
   delete live[sym]; delete tg[sym];
   view = 'split'; store.set('tracker-view', view);
   applyStocks(j); showSym(); lockInputs(); load();
+});
+
+// ---------- Verkauf ----------
+const sellFee = () => {   // Planspiel-Gebühr: 0,3 % vom Kurswert, mindestens 15 €
+  const v = (parseFloat($('sQty').value) || 0) * (parseFloat($('sPrice').value) || 0);
+  return v ? Math.max(15, Math.round(v * 0.003 * 100) / 100).toFixed(2) : '';
+};
+let feeTouched = false;
+$('dSell').addEventListener('click', () => {
+  if (!STOCKS[sym]) return;
+  $('sellForm').hidden = false; $('sMsg').textContent = ''; feeTouched = false;
+  $('sQty').value = ''; $('sQty').max = setting(sym, 'dQty');
+  $('sPrice').value = tg[sym]?.bid ?? tg[sym]?.last ?? '';
+  const n = new Date(); n.setMinutes(n.getMinutes() - n.getTimezoneOffset());
+  $('sTime').value = n.toISOString().slice(0, 19);
+  $('sFee').value = sellFee(); $('sQty').focus();
+});
+['sQty', 'sPrice'].forEach(id => $(id).addEventListener('input', () => { if (!feeTouched) $('sFee').value = sellFee(); }));
+$('sFee').addEventListener('input', () => feeTouched = true);
+$('sCancel').addEventListener('click', () => $('sellForm').hidden = true);
+$('sOk').addEventListener('click', async () => {
+  const qty = $('sQty').value, price = $('sPrice').value, fee = $('sFee').value || '0';
+  const s = sym, name = STOCKS[s]?.name;
+  if (!(qty > 0) || !(price > 0)) return $('sMsg').textContent = 'Stück und Kurs eingeben';
+  if (!confirm(`${qty} × ${name} zu ${price} verkaufen (Gebühr ${fee})?`)) return;
+  const r = await api('/api/stock/sell', { symbol: s, qty, price, fee, time: $('sTime').value }).catch(() => null);
+  const j = r ? await r.json().catch(() => ({})) : {};
+  if (r?.status === 401) { editPw = null; lockInputs(); return alert('Passwort falsch.'); }
+  if (!r?.ok) return $('sMsg').textContent = j.error || 'Verkauf fehlgeschlagen';
+  $('sellForm').hidden = true;
+  const sale = j.sales?.[j.sales.length - 1];
+  if (!j.stocks[s]) { view = 'split'; store.set('tracker-view', view); delete live[s]; delete tg[s]; }
+  applyStocks(j); showSym(); lockInputs(); load();
+  if (sale) alert(`Verkauft: ${sale.qty} × ${name}, realisiert ${signed(sale.realized_eur, eur)}`);
 });
 
 // ---------- Kursalarm ----------

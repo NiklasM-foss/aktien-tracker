@@ -41,7 +41,16 @@ Im Bearbeiten-Modus gibt es den Tab **+ Aktie**: ISIN oder Yahoo-Kürzel
 eingeben (z.B. `DE0007164600` oder `SAP.DE`), dazu Stückzahl, Gesamtpreis und
 Kaufgebühr. Name und Kürzel kommen von Yahoo, bei einer ISIN wird der deutsche
 Handelsplatz bevorzugt und in Euro über Tradegate bewertet. **Aktie entfernen**
-steht in der Depot-Karte der jeweiligen Aktie. Ist `EDIT_PASSWORD`
+steht in der Depot-Karte der jeweiligen Aktie.
+
+**Verkauf** (ebenfalls in der Depot-Karte): Stückzahl, Kurs je Aktie, Gebühr und
+Zeitpunkt. Die Position wird anteilig verkleinert (Einstand und Kaufgebühr nach
+Durchschnittskosten), die Differenz aus Erlös minus Gebühr minus anteiligem
+Einstand ist der realisierte Gewinn. Er fließt ins verfügbare Geld und in den
+Gesamtgewinn und steht als eigene Kachel *Realisiert* in der Übersicht. Die
+Gebühr wird nach der Planspiel-Regel vorgeschlagen (0,3 %, mindestens 15 €).
+Wird alles verkauft, verschwindet die Aktie aus der Liste, der Verkauf bleibt
+im Depot gespeichert. Ist `EDIT_PASSWORD`
 gesetzt, sind die Felder gesperrt; über **🔒 Bearbeiten** fragt die Seite das
 Passwort ab und schaltet sie frei. Änderungen werden automatisch gespeichert.
 Der Kursalarm bleibt pro Browser und braucht kein Passwort.
@@ -76,6 +85,7 @@ Die Unit startet den Server auf `0.0.0.0:8080` mit `Restart=always`. HTTPS
 | `/api/depot` | GET | Aktienliste mit Kaufdaten |
 | `/api/stock/add` | POST | `{"query": ISIN oder Kürzel, "values": {...}}`, Header `X-Password` |
 | `/api/stock/delete` | POST | `{"symbol": ...}`, Header `X-Password` |
+| `/api/stock/sell` | POST | `{"symbol", "qty", "price", "fee", "time"}`, Header `X-Password` |
 | `/api/depot` | POST | `{"symbol": ..., "values": {...}}`, Header `X-Password` |
 
 Für Home Assistant gibt es die Integration

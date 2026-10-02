@@ -172,6 +172,61 @@ def add_stock(query, values):
         depot = save_depot(symbol, values)
     return symbol, depot
 
+def sell_stock(symbol, qty, price, fee, when):
+    """Teilverkauf/Verkauf: Position anteilig verkleinern (Durchschnittskosten), Gewinn realisieren.
+
+    Verfuegbares Geld = Startkapital - Bezahltes der offenen Positionen + realisierter Gewinn,
+    deshalb reicht es, je Verkauf den realisierten Gewinn (in Euro) mitzuschreiben.
+    """
+    qty, price, fee = _num(qty), _num(price), _num(fee)
+    try:
+        when = datetime.fromisoformat(when).strftime("%Y-%m-%dT%H:%M:%S") if when else None
+    except ValueError:
+        raise ValueError("ungueltiger Zeitpunkt")
+    when = when or datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    if qty <= 0 or price <= 0 or fee < 0:
+        raise ValueError("Stueckzahl und Kurs muessen groesser 0 sein")
+    with DEPOT_LOCK:
+        depot = load_depot()
+        st = depot["stocks"].get(symbol)
+        if st is None:
+            raise ValueError("Aktie nicht im Depot")
+        have = _num(st.get("dQty"))
+        if qty > have + 1e-9:
+            raise ValueError(f"Nur {have:g} Stueck im Depot")
+        frac = qty / have
+        basis, buy_fee = _num(st.get("dCost")) * frac, _num(st.get("dFeeBuy")) * frac
+        realized = qty * price - fee - basis - buy_fee
+        fx = 1.0
+        if st.get("dCur", "EUR") != "EUR":
+            fx = eurusd()
+            if not fx:
+                raise ValueError("kein EUR/USD-Kurs, bitte spaeter erneut versuchen")
+        eur = lambda v: round(v / fx, 2)
+        depot.setdefault("sales", []).append({
+            "symbol": symbol, "name": st.get("name"), "time": when, "qty": qty, "price": price,
+            "cur": st.get("dCur", "EUR"), "fee": fee, "basis": round(basis, 2), "buy_fee": round(buy_fee, 2),
+            "realized_eur": eur(realized), "basis_eur": eur(basis + buy_fee), "fees_eur": eur(fee + buy_fee),
+        })
+        if have - qty < 1e-9:
+            del depot["stocks"][symbol]   # alles verkauft
+        else:
+            fmt = lambda v: f"{v:.2f}".rstrip("0").rstrip(".") if v % 1 else f"{v:.0f}"
+            st["dQty"] = fmt(have - qty)
+            st["dCost"] = f"{_num(st.get('dCost')) - basis:.2f}"
+            st["dFeeBuy"] = f"{_num(st.get('dFeeBuy')) - buy_fee:.2f}"
+        _write(depot)
+    return depot
+
+def realized_totals(depot):
+    sales = depot.get("sales", [])
+    return {
+        "pl": round(sum(x["realized_eur"] for x in sales), 2),
+        "basis": round(sum(x["basis_eur"] for x in sales), 2),
+        "fees": round(sum(x["fees_eur"] for x in sales), 2),
+        "count": len(sales),
+    }
+
 def delete_stock(symbol):
     with DEPOT_LOCK:
         depot = load_depot()
@@ -244,8 +299,10 @@ def summary():
     value = sum(p["value"] for p in stocks)
     paid = sum(p["cost"] + p["fees"] for p in stocks)
     fees = sum(p["fees"] for p in stocks)
-    pl = sum(p["pl"] for p in stocks)
-    cash = depot["start_capital"] - paid
+    real = realized_totals(depot)
+    pl = sum(p["pl"] for p in stocks) + real["pl"]   # offene Positionen plus realisierte Verkaeufe
+    cash = depot["start_capital"] - paid + real["pl"]
+    invested = paid + real["basis"]
     r2 = lambda v: None if v is None else round(v, 2)
     day = sum(p["day"] for p in stocks if p["day"] is not None)
     for p in stocks:
@@ -255,8 +312,10 @@ def summary():
         "updated": datetime.now().astimezone().isoformat(timespec="seconds"),
         "complete": not errors, "errors": errors, "eurusd": fx,
         "start_capital": depot["start_capital"], "cash": r2(cash), "value": r2(value), "total": r2(cash + value),
-        "paid": r2(paid), "fees": r2(fees), "pl": r2(pl), "pl_pct": r2(pl / paid * 100 if paid else 0.0),
-        "pl_ex_fees": r2(pl + fees), "day": r2(day),
+        "paid": r2(paid), "fees": r2(fees + real["fees"]), "pl": r2(pl),
+        "pl_pct": r2(pl / invested * 100 if invested else 0.0),
+        "pl_ex_fees": r2(pl + fees + real["fees"]), "day": r2(day),
+        "realized": real["pl"], "sales": depot.get("sales", []),
         "stocks": stocks,
     }
 
@@ -315,7 +374,8 @@ class H(BaseHTTPRequestHandler):
             elif u.path == "/api/depot":
                 d = load_depot()
                 self.send(200, json.dumps({"protected": bool(PASSWORD), "start_capital": d["start_capital"],
-                                           "stocks": d["stocks"]}).encode(), "application/json")
+                                           "stocks": d["stocks"], "realized": realized_totals(d),
+                                           "sales": d.get("sales", [])}).encode(), "application/json")
             elif u.path == "/api/summary":
                 self.send(200, json.dumps(summary()).encode(), "application/json")
             elif u.path == "/api/version":
@@ -331,7 +391,8 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
-        if u.path not in ("/api/login", "/api/depot", "/api/update", "/api/stock/add", "/api/stock/delete"):
+        if u.path not in ("/api/login", "/api/depot", "/api/update", "/api/stock/add", "/api/stock/delete",
+                          "/api/stock/sell"):
             return self.send(404, b"not found", "text/plain")
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -361,12 +422,15 @@ class H(BaseHTTPRequestHandler):
                 symbol, depot = add_stock(body.get("query"), body.get("values"))
             elif u.path == "/api/stock/delete":
                 depot = delete_stock(symbol)
+            elif u.path == "/api/stock/sell":
+                depot = sell_stock(symbol, body.get("qty"), body.get("price"), body.get("fee"), body.get("time"))
             else:
                 depot = save_depot(symbol, body.get("values"))
         except ValueError as e:
             return self.send(400, json.dumps({"error": str(e)}).encode(), "application/json")
-        self.send(200, json.dumps({"symbol": symbol, "stocks": depot["stocks"],
-                                   "start_capital": depot["start_capital"]}).encode(), "application/json")
+        self.send(200, json.dumps({"symbol": symbol, "stocks": depot["stocks"], "start_capital": depot["start_capital"],
+                                   "realized": realized_totals(depot), "sales": depot.get("sales", [])}).encode(),
+                  "application/json")
 
 if __name__ == "__main__":
     import threading, webbrowser
