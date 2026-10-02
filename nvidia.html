@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NVIDIA Live</title>
+<title>Aktien-Tracker</title>
 <style>
   :root {
     --bg: #0d1117; --card: #161b22; --line: #30363d; --text: #e6edf3; --muted: #8b949e;
@@ -59,7 +59,15 @@
                   border-radius: 6px; padding: 4px 8px; font: inherit; width: 100px; }
   .depot select { width: auto; }
   .depot input:disabled, .depot select:disabled { opacity: .6; }
-  .tabs { display: flex; gap: 6px; }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tabs button.add { border-style: dashed; }
+  .addform { margin-top: 14px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+  .addform input, .addform select { background: var(--bg); color: var(--text); border: 1px solid var(--line);
+                  border-radius: 6px; padding: 4px 8px; font: inherit; width: 100px; }
+  .addform #aQuery { width: 150px; }
+  .addform select { width: auto; }
+  .addform b { color: var(--text); }
+  #aMsg.err { color: var(--down); }
   .tabs button { background: var(--card); color: var(--muted); border: 1px solid var(--line); border-radius: 8px;
                  padding: 8px 14px; cursor: pointer; font: inherit; font-weight: 600; }
   .tabs button.on { background: var(--accent); color: #000; border-color: var(--accent); }
@@ -99,7 +107,7 @@
   body.is-split #single, body.is-split header .sub { display: none; }
   body.is-split .split { display: grid; }
   body.is-embed main { padding: 12px; }
-  body.is-embed #tabs, body.is-embed #total, body.is-embed .status { display: none; }
+  body.is-embed #tabs, body.is-embed #total, body.is-embed .status, body.is-embed #addCard { display: none; }
   body.is-embed .price { font-size: 40px; }
   body.is-embed .price-row { margin-top: 12px; }
   body.is-embed .chart-wrap { height: 230px; }
@@ -150,6 +158,18 @@
     <div class="status"><div class="dot" id="dot"></div><span id="status">verbinde…</span><button class="upd" id="dEdit" type="button" hidden>🔒 Bearbeiten</button><button class="upd" id="upd" type="button" hidden>⟳ Update</button></div>
   </header>
 
+  <div class="addform card" id="addCard" hidden>
+    <b>Aktie hinzufügen:</b>
+    <input id="aQuery" placeholder="ISIN oder Kürzel" maxlength="15">
+    <input id="aQty" type="number" step="1" placeholder="Stück"> für insgesamt
+    <input id="aCost" type="number" step="0.01" placeholder="Preis">
+    <select id="aCur"><option value="EUR">€</option><option value="USD">$</option></select>
+    · Kaufgebühr <input id="aFee" type="number" step="0.01" placeholder="0">
+    <button class="upd" id="aAdd" type="button">Hinzufügen</button>
+    <button class="upd" id="aCancel" type="button">Abbrechen</button>
+    <span id="aMsg"></span>
+  </div>
+
   <div class="total card" id="total"></div>
 
   <div id="single">
@@ -173,6 +193,7 @@
       gekauft · Gebühren: Kauf <input id="dFeeBuy" type="number" step="0.01">
       + Verkauf <input id="dFeeSell" type="number" step="0.01">
       <span id="dSave"></span>
+      <button class="upd" id="dDel" type="button" hidden style="margin-left:auto">Aktie entfernen</button>
     </div>
   </div>
 
@@ -216,54 +237,55 @@ const fxConv = (v, from, to, fx) => from === to ? v : to === 'EUR' ? v / fx : v 
 const store = { get: k => { try { return localStorage.getItem(k); } catch { return null; } },
                 set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 
-// Kauf-Vorgaben (dCost = Gesamtpreis ohne Gebühren)
-const STOCKS = {   // Werte laut Kaufabrechnung (Kurs × Anzahl), Kaufzeit für „Heute“
-  NVDA:      { isin: 'US67066G1040', name: 'NVIDIA Corp.', bought: '2026-10-02T10:26:53', def: { dQty: '18', dCost: '3724.20', dCur: 'EUR', dFeeBuy: '15', dFeeSell: '0' } },
-  MU:        { isin: 'US5951121038', name: 'Micron Technology', bought: '2026-10-02T10:41:59', def: { dQty: '5', dCost: '4922.00', dCur: 'EUR', dFeeBuy: '15', dFeeSell: '0' } },
-  'ELFW.DE': { isin: 'DE000ETFL508', name: 'Deka MSCI World UCITS ETF', short: 'MSCI World', bought: '2026-10-02T10:53:47', def: { dQty: '120', dCost: '5358.00', dCur: 'EUR', dFeeBuy: '16.08', dFeeSell: '0' } },
-  MRVL:      { isin: 'US5738741041', name: 'Marvell Technology', bought: '2026-10-02T11:22:24', def: { dQty: '30', dCost: '7266.00', dCur: 'EUR', dFeeBuy: '21.80', dFeeSell: '0' } },
-  'ENR.DE':  { isin: 'DE000ENER6Y0', name: 'Siemens Energy AG', short: 'Siemens Energy', bought: '2026-10-02T11:38:13', def: { dQty: '30', dCost: '4374.60', dCur: 'EUR', dFeeBuy: '15', dFeeSell: '0' } },
-};
-// bei geänderten Kaufdaten alte Eingaben im Browser verwerfen
-const DATA_VERSION = '2';
-if (store.get('tracker-ver') !== DATA_VERSION) {
-  for (const k of Object.keys(STOCKS)) for (const id of ['dQty', 'dCost', 'dCur', 'dFeeBuy', 'dFeeSell'])
-    try { localStorage.removeItem(k.toLowerCase() + '-' + id); } catch {}
-  store.set('tracker-ver', DATA_VERSION);
-}
-const SYMS = Object.keys(STOCKS);
-const START_CAPITAL = 50000;   // fiktives Startgeld in €
+// Aktienliste und Kaufdaten liegen auf dem Server (dCost = Gesamtpreis ohne Gebühren)
+let STOCKS = {}, SYMS = [];
+let START_CAPITAL = 50000;   // fiktives Startgeld in €, kommt vom Server
 const SURGE_PCT = 0.5, SURGE_MIN = 5;   // grün aufleuchten ab +0,5 % in 5 Minuten
 // Ansicht: ?embed=1&sym=X (Kachel im Split), sonst Split oder Einzelaktie (gemerkt)
 const qs = new URLSearchParams(location.search);
 const EMBED = qs.has('embed');
 let view = EMBED ? 'single' : (store.get('tracker-view') || 'split');
-let sym = STOCKS[qs.get('sym')] ? qs.get('sym') : STOCKS[store.get('tracker-sym')] ? store.get('tracker-sym') : 'NVDA';
+let sym = qs.get('sym') || store.get('tracker-sym') || 'NVDA';
 document.body.classList.toggle('is-embed', EMBED);
 document.body.classList.toggle('is-row', qs.has('row'));
 let range = '1d', data = null, lastPrice = null;
 const live = {};   // sym -> 1-Tages-Daten (für Depot + Alarm)
 const tg = {};     // sym -> Tradegate-Kurs in EUR (Depotbewertung wie in der App)
 const key = (s, id) => s.toLowerCase() + '-' + id;
-// Kaufdaten liegen zentral auf dem Server, ändern nur mit Passwort
-let DEPOT = {}, PROTECTED = true, editPw = null;
+// ändern nur mit Passwort
+let PROTECTED = true, editPw = null;
 const DEPOT_IDS = ['dQty', 'dCost', 'dCur', 'dFeeBuy', 'dFeeSell'];
-const setting = (s, id) => DEPOT[s]?.[id] ?? STOCKS[s].def[id] ?? '';
+const setting = (s, id) => STOCKS[s]?.[id] ?? '';
 const editing = () => !PROTECTED || editPw !== null;
 function lockInputs() {
   DEPOT_IDS.forEach(id => $(id).disabled = !editing());
   $('dEdit').hidden = !PROTECTED;
   $('dEdit').classList.toggle('on', editPw !== null);
   $('dEdit').textContent = editPw !== null ? 'Fertig' : '🔒 Bearbeiten';
+  $('dDel').hidden = !editing();
+  document.querySelector('#tabs button.add')?.toggleAttribute('hidden', !editing());
+  if (!editing()) $('addCard').hidden = true;
+}
+// Aktienliste vom Server übernehmen; Tabs/Kacheln nur neu bauen, wenn sich die Liste geändert hat
+function applyStocks(j) {
+  const changed = Object.keys(j.stocks).join() !== SYMS.join();
+  STOCKS = j.stocks; SYMS = Object.keys(STOCKS);
+  if (j.start_capital != null) START_CAPITAL = j.start_capital;
+  if (!STOCKS[sym]) { sym = SYMS[0] || ''; lastPrice = null; }
+  if (changed) { buildTabs(); $('split').innerHTML = ''; showSym(); }
+  return changed;
 }
 async function loadDepot() {
   try {
     const j = await (await fetch('/api/depot', { cache: 'no-store' })).json();
-    PROTECTED = j.protected; DEPOT = j.depot || {};
+    PROTECTED = j.protected;
+    // eigene, noch nicht gespeicherte Eingaben nicht überschreiben
+    if (saveTimer && j.stocks[sym] && STOCKS[sym]) j.stocks[sym] = STOCKS[sym];
+    if (applyStocks(j)) load();
   } catch { return; }
   lockInputs();
   // Felder nur nachziehen, wenn gerade niemand darin tippt
-  if (view !== 'split' && !DEPOT_IDS.includes(document.activeElement?.id) && !saveTimer)
+  if (view !== 'split' && STOCKS[sym] && !DEPOT_IDS.includes(document.activeElement?.id) && !saveTimer)
     DEPOT_IDS.forEach(id => $(id).value = setting(sym, id));
   if (live[sym]) { renderDepot(); renderTotal(); }
 }
@@ -288,16 +310,22 @@ function saveDepot(s) {
     const values = Object.fromEntries(DEPOT_IDS.map(id => [id, String(setting(s, id))]));
     const r = await api('/api/depot', { symbol: s, values }).catch(() => null);
     saveTimer = null;
-    if (r?.ok) { DEPOT = (await r.json()).depot; $('dSave').textContent = 'gespeichert'; }
+    if (r?.ok) { applyStocks(await r.json()); $('dSave').textContent = 'gespeichert'; }
     else if (r?.status === 401) { editPw = null; lockInputs(); $('dSave').textContent = ''; alert('Passwort falsch, Änderung nicht gespeichert.'); loadDepot(); }
     else $('dSave').textContent = 'Speichern fehlgeschlagen';
     setTimeout(() => { if (!saveTimer) $('dSave').textContent = ''; }, 2000);
   }, 600);
 }
 
-$('tabs').innerHTML = `<button data-s="ALL">Alle</button>` + SYMS.map(s => `<button data-s="${s}">${STOCKS[s].short || s}</button>`).join('');
+const esc = v => String(v).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+function buildTabs() {
+  $('tabs').innerHTML = `<button data-s="ALL">Alle</button>`
+    + SYMS.map(s => `<button data-s="${esc(s)}">${esc(STOCKS[s].short || s)}</button>`).join('')
+    + `<button data-s="ADD" class="add" title="Aktie hinzufügen"${editing() ? '' : ' hidden'}>+ Aktie</button>`;
+}
 $('tabs').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.s === 'ADD') { $('addCard').hidden = false; $('aQuery').focus(); return; }
   if (b.dataset.s === 'ALL') view = 'split';
   else { view = 'single'; sym = b.dataset.s; store.set('tracker-sym', sym); lastPrice = null; }
   store.set('tracker-view', view); showSym(); load();
@@ -306,11 +334,11 @@ function showSym() {
   const split = view === 'split';
   document.body.classList.toggle('is-split', split);
   if (split && !$('split').children.length)
-    $('split').innerHTML = SYMS.map(s => `<iframe src="/?embed=1&row=1&sym=${encodeURIComponent(s)}" title="${s}"></iframe>`).join('');
+    $('split').innerHTML = SYMS.map(s => `<iframe src="/?embed=1&row=1&sym=${encodeURIComponent(s)}" title="${esc(s)}"></iframe>`).join('');
   $('split').style.setProperty('--n', SYMS.length);
   if (!split) $('split').innerHTML = '';   // Kacheln nicht im Hintergrund weiterlaufen lassen
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', split ? b.dataset.s === 'ALL' : b.dataset.s === sym));
-  if (split) { $('name').textContent = 'Alle Aktien'; return; }
+  if (split || !STOCKS[sym]) { $('name').textContent = SYMS.length ? 'Alle Aktien' : 'Keine Aktien im Depot'; return; }
   $('name').textContent = `${STOCKS[sym].name} (${sym})`;
 
   ['dQty', 'dCost', 'dCur', 'dFeeBuy', 'dFeeSell'].forEach(id => $(id).value = setting(sym, id));
@@ -324,17 +352,19 @@ async function load() {
       if (j.error) throw new Error(j.error);
       return j;
     };
+    if (!SYMS.length) { renderTotal(); return; }
     const [all, cur] = await Promise.all([
-      Promise.all(SYMS.map(s => get(s, '1d'))),
-      range === '1d' ? null : get(sym, range),
+      Promise.all(SYMS.map(s => get(encodeURIComponent(s), '1d'))),
+      range === '1d' || !STOCKS[sym] ? null : get(encodeURIComponent(sym), range),
     ]);
     SYMS.forEach((s, i) => live[s] = all[i]);
     await Promise.all(SYMS.map(async s => {
+      if (!STOCKS[s]?.isin) return;
       try { const j = await (await fetch('/api/tg?isin=' + STOCKS[s].isin, { cache: 'no-store' })).json(); if (j.last) tg[s] = j; }
       catch {}
     }));
     data = cur || live[sym];
-    render();
+    if (data) render();
     if (!EMBED) SYMS.forEach(s => checkAlarm(s));
     showSurge();
     renderTotal();
@@ -522,7 +552,8 @@ $('ranges').addEventListener('click', e => {
 ['dQty', 'dCost', 'dCur', 'dFeeBuy', 'dFeeSell'].forEach(id => {
   $(id).addEventListener('input', () => {
     if (!editing()) return;
-    (DEPOT[sym] ??= {})[id] = $(id).value;
+    if (!STOCKS[sym]) return;
+    STOCKS[sym][id] = $(id).value;
     saveDepot(sym);
     if (live[sym]) { renderDepot(); renderTotal(); }
   });
@@ -541,13 +572,14 @@ function position(s) {
   const t = tg[s];
   const value = t && cur === 'EUR' ? t.last * qty : conv(px) * qty;
   // heute gekauft: „Heute“ = Entwicklung seit Kauf, sonst seit gestrigem Schluss
-  const b = STOCKS[s].bought ? new Date(STOCKS[s].bought) : null;
+  const b = STOCKS[s]?.bought ? new Date(STOCKS[s].bought) : null;
   const today = b && b.toDateString() === new Date().toDateString();
   const day = today ? value - cost : t && cur === 'EUR' && t.close ? (t.last - t.close) * qty : prev ? conv(px - prev) * qty : null;
   return { cur, fx, qty, cost, fees, value, pl: value - cost - fees, day, today };
 }
 const signed = (v, fmt) => (v >= 0 ? '+' : '') + fmt(v);
 function renderDepot() {
+  if (!STOCKS[sym]) return;
   const p = position(sym); if (!p) return;
   const fmt = p.cur === 'EUR' ? eur : usd;
   $('dValue').textContent = fmt(p.value);
@@ -568,6 +600,7 @@ function renderDepot() {
 function renderTotal() {
   let value = 0, paid = 0, pl = 0, fees = 0;
   for (const s of SYMS) {
+    if (!STOCKS[s]) continue;
     const p = position(s); if (!p) return;
     const toEur = v => p.cur === 'EUR' ? v : v / p.fx;
     value += toEur(p.value); paid += toEur(p.cost + p.fees); pl += toEur(p.pl); fees += toEur(p.fees);
@@ -584,6 +617,37 @@ function renderTotal() {
     cell('Gewinn / Verlust ohne Gebühren', signed(pl + fees, eur) + ` <span style="font-size:14px">(${pct(paid - fees ? (pl + fees) / (paid - fees) * 100 : 0)})</span>`, ud(pl + fees)) +
     cell('Bezahlt inkl. Gebühren', eur(paid));
 }
+
+// ---------- Aktie hinzufügen / entfernen ----------
+function addMsg(t, err) { $('aMsg').textContent = t; $('aMsg').className = err ? 'err' : ''; }
+$('aCancel').addEventListener('click', () => { $('addCard').hidden = true; addMsg(''); });
+$('aQuery').addEventListener('keydown', e => { if (e.key === 'Enter') $('aAdd').click(); });
+$('aAdd').addEventListener('click', async () => {
+  const query = $('aQuery').value.trim();
+  if (!query) return addMsg('ISIN oder Kürzel eingeben', true);
+  const values = { dQty: $('aQty').value || '0', dCost: $('aCost').value || '0', dCur: $('aCur').value,
+                   dFeeBuy: $('aFee').value || '0', dFeeSell: '0' };
+  $('aAdd').disabled = true; addMsg('suche …');
+  const r = await api('/api/stock/add', { query, values }).catch(() => null);
+  const j = r ? await r.json().catch(() => ({})) : {};
+  $('aAdd').disabled = false;
+  if (r?.status === 401) { editPw = null; lockInputs(); return alert('Passwort falsch.'); }
+  if (!r?.ok) return addMsg(j.error || 'Hinzufügen fehlgeschlagen', true);
+  ['aQuery', 'aQty', 'aCost', 'aFee'].forEach(id => $(id).value = '');
+  $('addCard').hidden = true; addMsg('');
+  sym = j.symbol; view = 'single'; store.set('tracker-sym', sym); store.set('tracker-view', view);
+  applyStocks(j); showSym(); lockInputs(); load();
+});
+$('dDel').addEventListener('click', async () => {
+  if (!STOCKS[sym] || !confirm(`${STOCKS[sym].name} (${sym}) wirklich aus dem Depot entfernen?`)) return;
+  const r = await api('/api/stock/delete', { symbol: sym }).catch(() => null);
+  const j = r ? await r.json().catch(() => ({})) : {};
+  if (r?.status === 401) { editPw = null; lockInputs(); return alert('Passwort falsch.'); }
+  if (!r?.ok) return alert('Entfernen fehlgeschlagen: ' + (j.error || 'keine Antwort'));
+  delete live[sym]; delete tg[sym];
+  view = 'split'; store.set('tracker-view', view);
+  applyStocks(j); showSym(); lockInputs(); load();
+});
 
 // ---------- Kursalarm ----------
 ['aHi', 'aLo'].forEach(id => {
@@ -637,14 +701,16 @@ $('upd').addEventListener('click', async () => {
 });
 loadVersion();
 
-// gespeicherten Zeitraum wiederherstellen
-showSym();
-lockInputs();
-loadDepot();
-setInterval(loadDepot, 10000);
-const saved = store.get('nvda-range');
-if (saved) document.querySelector(`#ranges button[data-r="${saved}"]`)?.click(); else load();
-setInterval(load, 5000);
+// Start: erst die Aktienliste vom Server, dann Kurse; gespeicherten Zeitraum wiederherstellen
+(async () => {
+  await loadDepot();
+  if (!SYMS.length) { buildTabs(); showSym(); }
+  lockInputs();
+  setInterval(loadDepot, 10000);
+  const saved = store.get('nvda-range');
+  if (saved) document.querySelector(`#ranges button[data-r="${saved}"]`)?.click(); else load();
+  setInterval(load, 5000);
+})();
 
 // ---------- Tagesgewinner ----------
 let mvSeen = null;

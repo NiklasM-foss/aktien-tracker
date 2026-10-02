@@ -33,8 +33,15 @@ Der Server liest diese Umgebungsvariablen:
 
 ### Depot bearbeiten
 
-Stückzahl, Kaufpreis, Währung und Gebühren liegen zentral auf dem Server
-(`DEPOT_FILE`), alle Besucher sehen dieselben Werte. Ist `EDIT_PASSWORD`
+Aktienliste, Stückzahl, Kaufpreis, Währung und Gebühren liegen zentral auf dem
+Server (`DEPOT_FILE`), alle Besucher sehen dieselben Werte. Fehlt die Datei,
+startet das Depot mit den fünf Ausgangswerten und 50.000 € Startkapital.
+
+Im Bearbeiten-Modus gibt es den Tab **+ Aktie**: ISIN oder Yahoo-Kürzel
+eingeben (z.B. `DE0007164600` oder `SAP.DE`), dazu Stückzahl, Gesamtpreis und
+Kaufgebühr. Name und Kürzel kommen von Yahoo, bei einer ISIN wird der deutsche
+Handelsplatz bevorzugt und in Euro über Tradegate bewertet. **Aktie entfernen**
+steht in der Depot-Karte der jeweiligen Aktie. Ist `EDIT_PASSWORD`
 gesetzt, sind die Felder gesperrt; über **🔒 Bearbeiten** fragt die Seite das
 Passwort ab und schaltet sie frei. Änderungen werden automatisch gespeichert.
 Der Kursalarm bleibt pro Browser und braucht kein Passwort.
@@ -60,6 +67,19 @@ anpassen, das Passwort in `/etc/aktien-tracker.env` ablegen
 
 Die Unit startet den Server auf `0.0.0.0:8080` mit `Restart=always`. HTTPS
 übernimmt ein vorgeschalteter Proxy bzw. Tunnel.
+
+## API
+
+| Pfad | Methode | Beschreibung |
+|------|---------|--------------|
+| `/api/summary` | GET | Depot ausgewertet: Gesamtvermögen, Depotwert, Gewinn/Verlust, Tagesveränderung, je Aktie Kurs, Wert und Gewinn (alles in Euro). Gedacht für Home Assistant |
+| `/api/depot` | GET | Aktienliste mit Kaufdaten |
+| `/api/stock/add` | POST | `{"query": ISIN oder Kürzel, "values": {...}}`, Header `X-Password` |
+| `/api/stock/delete` | POST | `{"symbol": ...}`, Header `X-Password` |
+| `/api/depot` | POST | `{"symbol": ..., "values": {...}}`, Header `X-Password` |
+
+Für Home Assistant gibt es die Integration
+[ha-aktien-tracker](https://github.com/NiklasM-foss/ha-aktien-tracker).
 
 ## Laufende Instanz
 
