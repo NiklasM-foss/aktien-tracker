@@ -16,3 +16,7 @@ Das schwarze Fenster offen lassen, solange der Tracker laufen soll.
 Die Kurse kommen von Yahoo Finance (Charts, Laufband) und Tradegate (Depotwerte in Euro)
 und aktualisieren sich alle 5 Sekunden.
 Stückzahl, Kaufpreis und Gebühren kann man auf der Seite selbst ändern.
+
+Online-Version: Auf dem Server sind die Depotwerte zentral gespeichert und nur
+mit Passwort änderbar ("Bearbeiten"). Neue Versionen aus dem Repo holt man dort
+mit dem Knopf "Update" oben rechts, Details im README.
