@@ -168,6 +168,9 @@ class H(BaseHTTPRequestHandler):
         except ValueError:
             return self.send(400, b"kein JSON", "text/plain")
         if not password_ok(self.headers.get("X-Password")):
+            given = self.headers.get("X-Password") or ""
+            odd = sorted({hex(ord(c)) for c in given if not c.isascii() or not c.isalnum()})
+            print(f"Login fehlgeschlagen ({u.path}): Laenge {len(given)}, Sonderzeichen {odd or 'keine'}", flush=True)
             time.sleep(1)   # Raten bremsen
             return self.send(401, json.dumps({"error": "Passwort falsch"}).encode(), "application/json")
         if u.path == "/api/login":
