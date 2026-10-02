@@ -6,10 +6,11 @@ Wants=network-online.target
 [Service]
 User=planspiel
 WorkingDirectory=/opt/planspiel/aktien-tracker
-Environment=HOST=0.0.0.0 PORT=8080 NO_BROWSER=1 PYTHONUNBUFFERED=1
+Environment=HOST=0.0.0.0 PORT=8080 NO_BROWSER=1 PYTHONUNBUFFERED=1 ALLOW_UPDATE=1 DEPOT_FILE=/opt/planspiel/depot.json
+EnvironmentFile=/etc/aktien-tracker.env
 ExecStart=/usr/bin/python3 server.py
 Restart=always
-RestartSec=5
+RestartSec=2
 
 [Install]
 WantedBy=multi-user.target

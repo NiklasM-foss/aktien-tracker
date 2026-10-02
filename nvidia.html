@@ -19,6 +19,8 @@
   h1 { margin: 0; font-size: 20px; }
   .sub { color: var(--muted); font-size: 13px; }
   .status { margin-left: auto; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+  .upd { background: transparent; color: var(--muted); border: 1px solid var(--line); border-radius: 6px;
+         padding: 2px 8px; font: inherit; cursor: pointer; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
   .dot.live { background: var(--up); animation: pulse 1.6s infinite; }
   .dot.err { background: var(--down); }
@@ -55,6 +57,10 @@
   .depot input, .depot select { background: var(--bg); color: var(--text); border: 1px solid var(--line);
                   border-radius: 6px; padding: 4px 8px; font: inherit; width: 100px; }
   .depot select { width: auto; }
+  .depot input:disabled, .depot select:disabled { opacity: .6; }
+  .depot .edit { margin-left: auto; background: transparent; color: var(--muted); border: 1px solid var(--line);
+                 border-radius: 6px; padding: 4px 10px; font: inherit; cursor: pointer; }
+  .depot .edit.on { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
   .tabs { display: flex; gap: 6px; }
   .tabs button { background: var(--card); color: var(--muted); border: 1px solid var(--line); border-radius: 8px;
                  padding: 8px 14px; cursor: pointer; font: inherit; font-weight: 600; }
@@ -143,7 +149,7 @@
       <h1 id="name">–</h1>
       <div class="sub" id="sub"></div>
     </div>
-    <div class="status"><div class="dot" id="dot"></div><span id="status">verbinde…</span></div>
+    <div class="status"><div class="dot" id="dot"></div><span id="status">verbinde…</span><button class="upd" id="upd" type="button" hidden>⟳ Update</button></div>
   </header>
 
   <div class="total card" id="total"></div>
@@ -168,6 +174,8 @@
       <select id="dCur"><option value="EUR">€</option><option value="USD">$</option></select>
       gekauft · Gebühren: Kauf <input id="dFeeBuy" type="number" step="0.01">
       + Verkauf <input id="dFeeSell" type="number" step="0.01">
+      <span id="dSave"></span>
+      <button class="edit" id="dEdit" type="button">🔒 Bearbeiten</button>
     </div>
   </div>
 
@@ -240,7 +248,53 @@ let range = '1d', data = null, lastPrice = null;
 const live = {};   // sym -> 1-Tages-Daten (für Depot + Alarm)
 const tg = {};     // sym -> Tradegate-Kurs in EUR (Depotbewertung wie in der App)
 const key = (s, id) => s.toLowerCase() + '-' + id;
-const setting = (s, id) => store.get(key(s, id)) ?? STOCKS[s].def[id] ?? '';
+// Kaufdaten liegen zentral auf dem Server, ändern nur mit Passwort
+let DEPOT = {}, PROTECTED = true, editPw = null;
+const DEPOT_IDS = ['dQty', 'dCost', 'dCur', 'dFeeBuy', 'dFeeSell'];
+const setting = (s, id) => DEPOT[s]?.[id] ?? STOCKS[s].def[id] ?? '';
+const editing = () => !PROTECTED || editPw !== null;
+function lockInputs() {
+  DEPOT_IDS.forEach(id => $(id).disabled = !editing());
+  $('dEdit').hidden = !PROTECTED;
+  $('dEdit').classList.toggle('on', editPw !== null);
+  $('dEdit').textContent = editPw !== null ? 'Fertig' : '🔒 Bearbeiten';
+}
+async function loadDepot() {
+  try {
+    const j = await (await fetch('/api/depot', { cache: 'no-store' })).json();
+    PROTECTED = j.protected; DEPOT = j.depot || {};
+  } catch { return; }
+  lockInputs();
+  // Felder nur nachziehen, wenn gerade niemand darin tippt
+  if (view !== 'split' && !DEPOT_IDS.includes(document.activeElement?.id) && !saveTimer)
+    DEPOT_IDS.forEach(id => $(id).value = setting(sym, id));
+  if (live[sym]) { renderDepot(); renderTotal(); }
+}
+const api = (path, body) => fetch(path, { method: 'POST', body: JSON.stringify(body),
+  headers: { 'Content-Type': 'application/json', 'X-Password': editPw ?? '' } });
+$('dEdit').addEventListener('click', async () => {
+  if (editPw !== null) { editPw = null; lockInputs(); return; }
+  const pw = prompt('Passwort zum Bearbeiten:');
+  if (pw === null) return;
+  editPw = pw;
+  const r = await api('/api/login', {});
+  if (!r.ok) { editPw = null; alert('Passwort falsch.'); }
+  lockInputs();
+});
+let saveTimer = null;
+function saveDepot(s) {
+  clearTimeout(saveTimer);
+  $('dSave').textContent = '…';
+  saveTimer = setTimeout(async () => {
+    const values = Object.fromEntries(DEPOT_IDS.map(id => [id, String(setting(s, id))]));
+    const r = await api('/api/depot', { symbol: s, values }).catch(() => null);
+    saveTimer = null;
+    if (r?.ok) { DEPOT = (await r.json()).depot; $('dSave').textContent = 'gespeichert'; }
+    else if (r?.status === 401) { editPw = null; lockInputs(); $('dSave').textContent = ''; alert('Passwort falsch, Änderung nicht gespeichert.'); loadDepot(); }
+    else $('dSave').textContent = 'Speichern fehlgeschlagen';
+    setTimeout(() => { if (!saveTimer) $('dSave').textContent = ''; }, 2000);
+  }, 600);
+}
 
 $('tabs').innerHTML = `<button data-s="ALL">Alle</button>` + SYMS.map(s => `<button data-s="${s}">${STOCKS[s].short || s}</button>`).join('');
 $('tabs').addEventListener('click', e => {
@@ -467,7 +521,12 @@ $('ranges').addEventListener('click', e => {
 
 // ---------- Depot ----------
 ['dQty', 'dCost', 'dCur', 'dFeeBuy', 'dFeeSell'].forEach(id => {
-  $(id).addEventListener('input', () => { store.set(key(sym, id), $(id).value); if (live[sym]) { renderDepot(); renderTotal(); } });
+  $(id).addEventListener('input', () => {
+    if (!editing()) return;
+    (DEPOT[sym] ??= {})[id] = $(id).value;
+    saveDepot(sym);
+    if (live[sym]) { renderDepot(); renderTotal(); }
+  });
 });
 // Position einer Aktie, Beträge in ihrer Depotwährung (cur)
 function position(s) {
@@ -550,8 +609,40 @@ function checkAlarm(s) {
   hit(s + 'lo', lo && p <= lo, `${s} unter ${f(lo)}: ${f(p)}`);
 }
 
+// ---------- Update vom Repo ----------
+async function loadVersion() {
+  try {
+    const v = await (await fetch('/api/version', { cache: 'no-store' })).json();
+    $('upd').hidden = !v.update || EMBED;
+    $('upd').title = v.commit ? `Stand ${v.commit} vom ${v.date}: ${v.message}` : '';
+  } catch {}
+}
+$('upd').addEventListener('click', async () => {
+  if (editPw === null) {
+    const pw = prompt('Passwort für das Update:');
+    if (pw === null) return;
+    editPw = pw;
+  }
+  if (!confirm('Neuesten Stand aus dem Repo holen und neu starten?')) return;
+  $('upd').disabled = true; $('upd').textContent = '⟳ lädt…';
+  const r = await api('/api/update', {}).catch(() => null);
+  const j = r ? await r.json().catch(() => ({})) : {};
+  if (r?.ok && j.restart) {
+    $('upd').textContent = `⟳ ${j.old} → ${j.new}, Neustart…`;
+    setTimeout(() => location.reload(), 4000);
+    return;
+  }
+  if (r?.status === 401) { editPw = null; lockInputs(); }
+  alert(r?.ok ? `Schon aktuell (${j.new}).` : r?.status === 401 ? 'Passwort falsch.' : 'Update fehlgeschlagen: ' + (j.error || 'keine Antwort'));
+  $('upd').disabled = false; $('upd').textContent = '⟳ Update';
+});
+loadVersion();
+
 // gespeicherten Zeitraum wiederherstellen
 showSym();
+lockInputs();
+loadDepot();
+setInterval(loadDepot, 10000);
 const saved = store.get('nvda-range');
 if (saved) document.querySelector(`#ranges button[data-r="${saved}"]`)?.click(); else load();
 setInterval(load, 5000);
