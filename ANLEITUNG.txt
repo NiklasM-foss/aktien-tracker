@@ -1,0 +1,18 @@
+Aktien-Tracker (fiktives Depot: NVIDIA, Micron, MSCI World, Marvell, Siemens Energy)
+====================================================================================
+
+Voraussetzung: Python 3 (kostenlos, https://www.python.org/downloads/)
+  - Mac: ist meist schon drauf
+  - Windows: bei der Installation "Add Python to PATH" anhaken
+
+Starten:
+  Mac:      Rechtsklick auf "Start (Mac).command" -> Öffnen -> Öffnen
+            (nur beim ersten Mal nötig, weil die Datei aus dem Internet kommt)
+  Windows:  Doppelklick auf "Start (Windows).bat"
+
+Der Browser öffnet sich dann automatisch mit http://localhost:8766
+Das schwarze Fenster offen lassen, solange der Tracker laufen soll.
+
+Die Kurse kommen von Yahoo Finance (Charts, Laufband) und Tradegate (Depotwerte in Euro)
+und aktualisieren sich alle 5 Sekunden.
+Stückzahl, Kaufpreis und Gebühren kann man auf der Seite selbst ändern.

@@ -1,0 +1,591 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NVIDIA Live</title>
+<style>
+  :root {
+    --bg: #0d1117; --card: #161b22; --line: #30363d; --text: #e6edf3; --muted: #8b949e;
+    --up: #3fb950; --down: #f85149; --accent: #76b900;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .logo { width: 40px; height: 40px; border-radius: 8px; background: var(--accent);
+          display: grid; place-items: center; font-weight: 800; color: #000; }
+  h1 { margin: 0; font-size: 20px; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .status { margin-left: auto; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+  .dot.live { background: var(--up); animation: pulse 1.6s infinite; }
+  .dot.err { background: var(--down); }
+  @keyframes pulse { 50% { opacity: .3; } }
+
+  .price-row { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin: 22px 0 4px; }
+  .price { font-size: 56px; font-weight: 700; font-variant-numeric: tabular-nums; transition: color .4s; }
+  .price.flash-up { color: var(--up); } .price.flash-down { color: var(--down); }
+  .chg { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .up { color: var(--up); } .down { color: var(--down); }
+  .eur { color: var(--muted); font-size: 18px; font-variant-numeric: tabular-nums; }
+  .ext { color: var(--muted); font-size: 14px; margin-bottom: 18px; min-height: 20px; }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .ranges { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+  .ranges button { background: transparent; color: var(--muted); border: 1px solid var(--line);
+                   border-radius: 6px; padding: 5px 12px; cursor: pointer; font: inherit; font-size: 13px; }
+  .ranges button.on { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
+  .chart-wrap { position: relative; height: 380px; }
+  canvas { width: 100%; height: 100%; display: block; }
+  .tip { position: absolute; pointer-events: none; background: #000c; border: 1px solid var(--line);
+         padding: 4px 8px; border-radius: 6px; font-size: 12px; display: none; white-space: nowrap; }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin-top: 14px; }
+  .stat .k { color: var(--muted); font-size: 12px; }
+  .stat .v { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  .depot { margin-bottom: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; align-items: end; }
+  .depot .k { color: var(--muted); font-size: 12px; }
+  .depot .v { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .depot .big { font-size: 30px; white-space: nowrap; }
+  .depot .setup { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+                  font-size: 13px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 10px; }
+  .depot input, .depot select { background: var(--bg); color: var(--text); border: 1px solid var(--line);
+                  border-radius: 6px; padding: 4px 8px; font: inherit; width: 100px; }
+  .depot select { width: auto; }
+  .tabs { display: flex; gap: 6px; }
+  .tabs button { background: var(--card); color: var(--muted); border: 1px solid var(--line); border-radius: 8px;
+                 padding: 8px 14px; cursor: pointer; font: inherit; font-weight: 600; }
+  .tabs button.on { background: var(--accent); color: #000; border-color: var(--accent); }
+  .total { margin: 18px 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+  .total .k { color: var(--muted); font-size: 12px; }
+  .total .v { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .split { display: none; grid-template-columns: 1fr; gap: 10px; margin-top: 12px; }
+  .split iframe { width: 100%; height: max(150px, calc((100vh - 235px) / var(--n, 4) - 10px)); border: 1px solid var(--line);
+                  border-radius: 12px; background: var(--bg); display: block; }
+  /* Zeilen-Kachel im Dashboard: Kurs | Position | Chart nebeneinander */
+  body.is-row { min-height: 0; height: 100vh; overflow: hidden; }
+  body.is-row main { display: grid; grid-template-columns: 350px minmax(360px, 1fr) 1.6fr; grid-template-rows: auto auto 1fr;
+                     column-gap: 14px; height: 100vh; padding: 10px 14px; max-width: none; }
+  body.is-row #single { display: contents; }
+  body.is-row header { grid-column: 1; grid-row: 1; }
+  body.is-row h1 { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 300px; }
+  body.is-row header > div:not(.tabs):not(.status) { min-width: 0; }
+  body.is-row .sub { font-size: 11px; }
+  body.is-row main { grid-template-rows: auto auto minmax(0, 1fr); padding: 8px 12px; overflow: hidden; }
+  body.is-row .ext { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  body.is-row .depot .k { font-size: 11px; }
+  body.is-row .price-row { grid-column: 1; grid-row: 2; margin: 6px 0 0; gap: 4px 10px; }
+  body.is-row .price { font-size: 26px; }
+  body.is-row .chg { font-size: 16px; }
+  body.is-row .eur { display: none; }
+  body.is-row .price-row { flex-wrap: nowrap; white-space: nowrap; }
+  body.is-row .ext { grid-column: 1; grid-row: 3; font-size: 12px; margin: 4px 0 0; }
+  body.is-row .depot { grid-column: 2; grid-row: 1 / 4; margin: 0; padding: 8px 14px; grid-template-columns: 1fr 1fr; align-content: center; gap: 4px 14px; min-height: 0; overflow: hidden; }
+  body.is-row .depot .setup, body.is-row .stats, body.is-row .alarm { display: none; }
+  body.is-row .depot .big { font-size: 20px; }
+  body.is-row .depot .v { font-size: 16px; }
+  body.is-row #chartCard { grid-column: 3; grid-row: 1 / 4; display: flex; flex-direction: column; padding: 8px 10px; min-height: 0; }
+  body.is-row .ranges { margin-bottom: 4px; }
+  body.is-row .ranges button { padding: 2px 8px; font-size: 11px; }
+  body.is-row .chart-wrap { flex: 1; height: auto; min-height: 0; }
+  body.is-split main { max-width: none; }
+  body.is-split #single, body.is-split header .sub { display: none; }
+  body.is-split .split { display: grid; }
+  body.is-embed main { padding: 12px; }
+  body.is-embed #tabs, body.is-embed #total, body.is-embed .status { display: none; }
+  body.is-embed .price { font-size: 40px; }
+  body.is-embed .price-row { margin-top: 12px; }
+  body.is-embed .chart-wrap { height: 230px; }
+  body.is-embed .depot .big { font-size: 24px; }
+  /* Aufleuchten bei rasantem Anstieg */
+  @keyframes glow { from { box-shadow: inset 0 0 0 2px #3fb95088, inset 0 0 30px #3fb95022; }
+                    to   { box-shadow: inset 0 0 0 3px #3fb950, inset 0 0 70px #3fb95066; } }
+  body { min-height: 100vh; }
+  body.surge { animation: glow .9s ease-in-out infinite alternate; }
+  .tabs button.surge { animation: glow .9s ease-in-out infinite alternate; color: var(--up); }
+  .rocket { display: none; color: var(--up); font-weight: 700; font-size: 15px; }
+  body.surge .rocket { display: inline; }
+  /* Laufband mit Tagesgewinnern */
+  .ticker { display: flex; align-items: center; margin: -24px -16px 16px; border-bottom: 1px solid var(--line);
+            background: var(--card); height: 38px; overflow: hidden; font-size: 14px; }
+  .ticker .lbl { flex: none; padding: 0 14px; height: 100%; display: flex; align-items: center; gap: 6px;
+                 font-weight: 700; background: var(--card); border-right: 1px solid var(--line); z-index: 1; cursor: help; }
+  .ticker .track { flex: 1; overflow: hidden; mask-image: linear-gradient(90deg, transparent, #000 3%, #000 97%, transparent); }
+  .ticker .run { display: inline-flex; white-space: nowrap; animation: tick var(--dur, 60s) linear infinite; }
+  .ticker:hover .run { animation-play-state: paused; }
+  @keyframes tick { to { transform: translateX(-50%); } }
+  .mv { text-decoration: none; color: inherit; padding: 0 22px; border-right: 1px solid var(--line);
+        font-variant-numeric: tabular-nums; }
+  .mv:hover b { text-decoration: underline; }
+  .mv .nm { color: var(--muted); margin: 0 6px; }
+  .mv .ext { color: var(--muted); font-size: 12px; margin-left: 6px; }
+  body.is-embed .ticker { display: none; }
+  body.is-split main { padding-top: 24px; }
+  .alarm { margin-top: 14px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 14px; }
+  .alarm input { width: 110px; background: var(--bg); color: var(--text); border: 1px solid var(--line);
+                 border-radius: 6px; padding: 5px 8px; font: inherit; }
+  .alarm span { color: var(--muted); }
+  @media (max-width: 600px) { .price { font-size: 40px; } .chart-wrap { height: 260px; } }
+</style>
+</head>
+<body>
+<main>
+  <div class="ticker" id="ticker">
+    <div class="lbl" id="mvInfo" title="lädt…">🔥 Läuft gerade gut</div>
+    <div class="track"><div class="run" id="mvList"></div></div>
+  </div>
+  <header>
+    <div class="tabs" id="tabs"></div>
+    <div>
+      <h1 id="name">–</h1>
+      <div class="sub" id="sub"></div>
+    </div>
+    <div class="status"><div class="dot" id="dot"></div><span id="status">verbinde…</span></div>
+  </header>
+
+  <div class="total card" id="total"></div>
+
+  <div id="single">
+  <div class="price-row">
+    <div class="price" id="price">–</div>
+    <div class="chg" id="chg"></div>
+    <div class="eur" id="eur"></div>
+    <div class="rocket" id="rocket"></div>
+  </div>
+  <div class="ext" id="ext"></div>
+
+  <div class="depot card" id="depot">
+    <div><div class="k" id="dTitle">Position (fiktiv)</div><div class="v big" id="dValue">–</div></div>
+    <div><div class="k" id="dPLk">Gewinn / Verlust</div><div class="v big" id="dPL">–</div></div>
+    <div><div class="k" id="dDayK">Heute</div><div class="v" id="dDay">–</div></div>
+    <div><div class="k">Einstand pro Aktie</div><div class="v" id="dAvg">–</div></div>
+    <div class="setup">
+      <input id="dQty" type="number" step="1"> Stück für insgesamt
+      <input id="dCost" type="number" step="0.01">
+      <select id="dCur"><option value="EUR">€</option><option value="USD">$</option></select>
+      gekauft · Gebühren: Kauf <input id="dFeeBuy" type="number" step="0.01">
+      + Verkauf <input id="dFeeSell" type="number" step="0.01">
+    </div>
+  </div>
+
+  <div class="card" id="chartCard">
+    <div class="ranges" id="ranges">
+      <button data-r="1d" class="on">1 Tag</button>
+      <button data-r="5d">5 Tage</button>
+      <button data-r="1mo">1 Monat</button>
+      <button data-r="6mo">6 Monate</button>
+      <button data-r="1y">1 Jahr</button>
+      <button data-r="5y">5 Jahre</button>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="chart"></canvas>
+      <div class="tip" id="tip"></div>
+    </div>
+  </div>
+
+  <div class="stats card" id="stats"></div>
+
+  <div class="alarm card">
+    Kursalarm: über <input id="aHi" type="number" step="0.5" placeholder="$">
+    oder unter <input id="aLo" type="number" step="0.5" placeholder="$">
+    <span id="aInfo">(Browser-Benachrichtigung)</span>
+  </div>
+  </div>
+  <div class="split" id="split"></div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const usd = v => v == null ? '–' : v.toLocaleString('de-DE', { style: 'currency', currency: 'USD' });
+const eur = v => v == null ? '–' : v.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' });
+const pct = v => (v >= 0 ? '+' : '') + v.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' %';
+const num = v => v == null ? '–' : v.toLocaleString('de-DE');
+const money = (v, c) => c === 'EUR' ? eur(v) : usd(v);
+let pf = usd;   // Formatierung in der Kurswährung der angezeigten Aktie
+// Kurswährung -> Zielwährung (fx = Dollar pro Euro)
+const fxConv = (v, from, to, fx) => from === to ? v : to === 'EUR' ? v / fx : v * fx;
+
+const store = { get: k => { try { return localStorage.getItem(k); } catch { return null; } },
+                set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+
+// Kauf-Vorgaben (dCost = Gesamtpreis ohne Gebühren)
+const STOCKS = {   // Werte laut Kaufabrechnung (Kurs × Anzahl), Kaufzeit für „Heute“
+  NVDA:      { isin: 'US67066G1040', name: 'NVIDIA Corp.', bought: '2026-10-02T10:26:53', def: { dQty: '18', dCost: '3724.20', dCur: 'EUR', dFeeBuy: '15', dFeeSell: '0' } },
+  MU:        { isin: 'US5951121038', name: 'Micron Technology', bought: '2026-10-02T10:41:59', def: { dQty: '5', dCost: '4922.00', dCur: 'EUR', dFeeBuy: '15', dFeeSell: '0' } },
+  'ELFW.DE': { isin: 'DE000ETFL508', name: 'Deka MSCI World UCITS ETF', short: 'MSCI World', bought: '2026-10-02T10:53:47', def: { dQty: '120', dCost: '5358.00', dCur: 'EUR', dFeeBuy: '16.08', dFeeSell: '0' } },
+  MRVL:      { isin: 'US5738741041', name: 'Marvell Technology', bought: '2026-10-02T11:22:24', def: { dQty: '30', dCost: '7266.00', dCur: 'EUR', dFeeBuy: '21.80', dFeeSell: '0' } },
+  'ENR.DE':  { isin: 'DE000ENER6Y0', name: 'Siemens Energy AG', short: 'Siemens Energy', bought: '2026-10-02T11:38:13', def: { dQty: '30', dCost: '4374.60', dCur: 'EUR', dFeeBuy: '15', dFeeSell: '0' } },
+};
+// bei geänderten Kaufdaten alte Eingaben im Browser verwerfen
+const DATA_VERSION = '2';
+if (store.get('tracker-ver') !== DATA_VERSION) {
+  for (const k of Object.keys(STOCKS)) for (const id of ['dQty', 'dCost', 'dCur', 'dFeeBuy', 'dFeeSell'])
+    try { localStorage.removeItem(k.toLowerCase() + '-' + id); } catch {}
+  store.set('tracker-ver', DATA_VERSION);
+}
+const SYMS = Object.keys(STOCKS);
+const START_CAPITAL = 50000;   // fiktives Startgeld in €
+const SURGE_PCT = 0.5, SURGE_MIN = 5;   // grün aufleuchten ab +0,5 % in 5 Minuten
+// Ansicht: ?embed=1&sym=X (Kachel im Split), sonst Split oder Einzelaktie (gemerkt)
+const qs = new URLSearchParams(location.search);
+const EMBED = qs.has('embed');
+let view = EMBED ? 'single' : (store.get('tracker-view') || 'split');
+let sym = STOCKS[qs.get('sym')] ? qs.get('sym') : STOCKS[store.get('tracker-sym')] ? store.get('tracker-sym') : 'NVDA';
+document.body.classList.toggle('is-embed', EMBED);
+document.body.classList.toggle('is-row', qs.has('row'));
+let range = '1d', data = null, lastPrice = null;
+const live = {};   // sym -> 1-Tages-Daten (für Depot + Alarm)
+const tg = {};     // sym -> Tradegate-Kurs in EUR (Depotbewertung wie in der App)
+const key = (s, id) => s.toLowerCase() + '-' + id;
+const setting = (s, id) => store.get(key(s, id)) ?? STOCKS[s].def[id] ?? '';
+
+$('tabs').innerHTML = `<button data-s="ALL">Alle</button>` + SYMS.map(s => `<button data-s="${s}">${STOCKS[s].short || s}</button>`).join('');
+$('tabs').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.s === 'ALL') view = 'split';
+  else { view = 'single'; sym = b.dataset.s; store.set('tracker-sym', sym); lastPrice = null; }
+  store.set('tracker-view', view); showSym(); load();
+});
+function showSym() {
+  const split = view === 'split';
+  document.body.classList.toggle('is-split', split);
+  if (split && !$('split').children.length)
+    $('split').innerHTML = SYMS.map(s => `<iframe src="/?embed=1&row=1&sym=${encodeURIComponent(s)}" title="${s}"></iframe>`).join('');
+  $('split').style.setProperty('--n', SYMS.length);
+  if (!split) $('split').innerHTML = '';   // Kacheln nicht im Hintergrund weiterlaufen lassen
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', split ? b.dataset.s === 'ALL' : b.dataset.s === sym));
+  if (split) { $('name').textContent = 'Alle Aktien'; return; }
+  $('name').textContent = `${STOCKS[sym].name} (${sym})`;
+
+  ['dQty', 'dCost', 'dCur', 'dFeeBuy', 'dFeeSell'].forEach(id => $(id).value = setting(sym, id));
+  ['aHi', 'aLo'].forEach(id => $(id).value = store.get(key(sym, id)) || '');
+}
+
+async function load() {
+  try {
+    const get = async (s, r) => {
+      const j = await (await fetch(`/api/quote?symbol=${s}&range=${r}`, { cache: 'no-store' })).json();
+      if (j.error) throw new Error(j.error);
+      return j;
+    };
+    const [all, cur] = await Promise.all([
+      Promise.all(SYMS.map(s => get(s, '1d'))),
+      range === '1d' ? null : get(sym, range),
+    ]);
+    SYMS.forEach((s, i) => live[s] = all[i]);
+    await Promise.all(SYMS.map(async s => {
+      try { const j = await (await fetch('/api/tg?isin=' + STOCKS[s].isin, { cache: 'no-store' })).json(); if (j.last) tg[s] = j; }
+      catch {}
+    }));
+    data = cur || live[sym];
+    render();
+    if (!EMBED) SYMS.forEach(s => checkAlarm(s));
+    showSurge();
+    renderTotal();
+    $('dot').className = 'dot live';
+    $('status').textContent = 'live · ' + new Date().toLocaleTimeString('de-DE');
+  } catch (e) {
+    $('dot').className = 'dot err';
+    $('status').textContent = 'Fehler – Server läuft?';
+  }
+}
+
+// Anstieg in % über die letzten SURGE_MIN Minuten (null, wenn keine frischen Kurse)
+function surge(s) {
+  const pts = live[s]?.points; if (!pts?.length) return null;
+  const [t, p] = pts[pts.length - 1];
+  if (Date.now() / 1000 - t > 600) return null;          // Börse zu / keine aktuellen Kurse
+  let old = null;
+  for (let i = pts.length - 1; i >= 0; i--) if (pts[i][0] <= t - SURGE_MIN * 60) { old = pts[i][1]; break; }
+  return old ? (p - old) / old * 100 : null;
+}
+function showSurge() {
+  for (const s of SYMS) {
+    const v = surge(s), up = v != null && v >= SURGE_PCT;
+    document.querySelector(`#tabs button[data-s="${s}"]`)?.classList.toggle('surge', up);
+    if (s === sym) {
+      document.body.classList.toggle('surge', up && view !== 'split');
+      if (up) $('rocket').textContent = `🚀 ${pct(v)} in ${SURGE_MIN} Min`;
+    }
+  }
+}
+
+function render() {
+  const m = data.meta;
+  const pts = data.points;
+  pf = v => money(v, m.currency);
+  $('sub').textContent = `${m.fullExchangeName || m.exchangeName} · ${m.currency}`;
+  // aktueller Kurs: letzter Punkt (inkl. Vor-/Nachbörse) bei 1 Tag, sonst regulärer Kurs
+  const regular = m.regularMarketPrice;
+  const prev = m.chartPreviousClose ?? m.previousClose;
+  const dayPrev = range === '1d' ? prev : (m.previousClose ?? prev);
+  const chg = regular - (range === '1d' ? prev : dayPrev);
+
+  const p = $('price');
+  if (lastPrice != null && regular !== lastPrice) {
+    p.className = 'price ' + (regular > lastPrice ? 'flash-up' : 'flash-down');
+    setTimeout(() => p.className = 'price', 900);
+  }
+  lastPrice = regular;
+  p.textContent = pf(regular);
+  if (range === '1d') {
+    $('chg').className = 'chg ' + (chg >= 0 ? 'up' : 'down');
+    $('chg').textContent = (chg >= 0 ? '+' : '') + chg.toFixed(2) + ' (' + pct(chg / prev * 100) + ')';
+  } else if (pts.length) {
+    const first = pts[0][1], c = regular - first;
+    $('chg').className = 'chg ' + (c >= 0 ? 'up' : 'down');
+    $('chg').textContent = (c >= 0 ? '+' : '') + c.toFixed(2) + ' (' + pct(c / first * 100) + ') im Zeitraum';
+  }
+  $('eur').textContent = m.currency === 'USD' && data.eurusd ? '≈ ' + eur(regular / data.eurusd) : '';
+
+  // Vor-/Nachbörse
+  const now = Date.now() / 1000, per = m.currentTradingPeriod || {};
+  const last = pts.length ? pts[pts.length - 1] : null;
+  let ext = '';
+  if (per.regular && now >= per.regular.start && now < per.regular.end) ext = 'Börse geöffnet';
+  else if (last && range === '1d' && last[0] > (per.regular?.end ?? 0)) {
+    const d = last[1] - regular;
+    ext = `Nachbörslich: ${pf(last[1])} <span class="${d >= 0 ? 'up' : 'down'}">${pct(d / regular * 100)}</span>`;
+  } else if (last && range === '1d' && per.pre && last[0] >= per.pre.start && last[0] < per.regular.start) {
+    const d = last[1] - regular;
+    ext = `Vorbörslich: ${pf(last[1])} <span class="${d >= 0 ? 'up' : 'down'}">${pct(d / regular * 100)}</span>`;
+  } else ext = 'Börse geschlossen';
+  ext += ' · Stand ' + new Date(m.regularMarketTime * 1000).toLocaleString('de-DE');
+  $('ext').innerHTML = ext;
+
+  $('stats').innerHTML = [
+    [range === '1d' ? 'Vortag Schluss' : 'Schluss vor Zeitraum', pf(prev)],
+    ['Tageshoch', pf(m.regularMarketDayHigh)],
+    ['Tagestief', pf(m.regularMarketDayLow)],
+    ['Volumen', num(m.regularMarketVolume)],
+    ['52W Hoch', pf(m.fiftyTwoWeekHigh)],
+    ['52W Tief', pf(m.fiftyTwoWeekLow)],
+    ['EUR/USD', data.eurusd ? data.eurusd.toFixed(4) : '–'],
+  ].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+
+  if (view !== 'split') document.title = `${STOCKS[sym].short || sym} ${pf(regular)} ${range === '1d' ? (chg >= 0 ? '▲' : '▼') : ''}`;
+  draw();
+  renderDepot();
+}
+
+// ---------- Chart ----------
+const cv = $('chart'), ctx = cv.getContext('2d');
+let geo = null;
+function draw() {
+  if (!data) return;
+  const dpr = devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const pts = data.points; if (pts.length < 2) return;
+  const css = getComputedStyle(document.documentElement);
+  const prev = data.meta.chartPreviousClose;
+  const vals = pts.map(p => p[1]); if (range === '1d' && prev) vals.push(prev);
+  let lo = Math.min(...vals), hi = Math.max(...vals); const pad = (hi - lo) * 0.08 || 1; lo -= pad; hi += pad;
+  const L = 8, R = 62, T = 10, B = 24;
+  const t0 = pts[0][0], t1 = pts[pts.length - 1][0];
+  // bei 1 Tag: x-Achse über den ganzen Handelstag inkl. Vor-/Nachbörse
+  const per = data.meta.currentTradingPeriod;
+  const xs = range === '1d' && per ? Math.min(t0, per.pre.start) : t0;
+  const xe = range === '1d' && per ? Math.max(t1, per.post.end) : t1;
+  const X = t => L + (t - xs) / (xe - xs) * (W - L - R);
+  const Y = v => T + (hi - v) / (hi - lo) * (H - T - B);
+  geo = { X, Y, pts, L, R, W, H, T, B };
+
+  // Gitter + Preisachse
+  ctx.font = '11px -apple-system, sans-serif'; ctx.fillStyle = css.getPropertyValue('--muted');
+  ctx.strokeStyle = css.getPropertyValue('--line'); ctx.lineWidth = 1;
+  const gl = H < 170 ? 2 : 4;   // in flachen Zeilen weniger Preislinien
+  for (let i = 0; i <= gl; i++) {
+    const v = lo + (hi - lo) * i / gl, y = Y(v);
+    ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(W - R, y); ctx.stroke();
+    ctx.fillText(v.toFixed(2), W - R + 6, y + 4);
+  }
+  // Zeitachse
+  for (let i = 0; i <= 4; i++) {
+    const t = xs + (xe - xs) * i / 4, x = X(t);
+    const d = new Date(t * 1000);
+    const lab = range === '1d' ? d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })
+              : range === '5d' ? d.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit' })
+              : d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: range === '5y' ? '2-digit' : undefined });
+    ctx.textAlign = i === 0 ? 'left' : i === 4 ? 'right' : 'center';
+    ctx.fillText(lab, x, H - 6);
+  }
+  ctx.textAlign = 'left';
+  // reguläre Handelszeit hinterlegen
+  if (range === '1d' && per) {
+    ctx.fillStyle = '#ffffff08';
+    ctx.fillRect(X(per.regular.start), T, X(per.regular.end) - X(per.regular.start), H - T - B);
+  }
+  // Vortageslinie
+  if (range === '1d' && prev) {
+    ctx.setLineDash([4, 4]); ctx.strokeStyle = css.getPropertyValue('--muted');
+    ctx.beginPath(); ctx.moveTo(L, Y(prev)); ctx.lineTo(W - R, Y(prev)); ctx.stroke(); ctx.setLineDash([]);
+  }
+  const base = range === '1d' && prev ? prev : pts[0][1];
+  const col = pts[pts.length - 1][1] >= base ? css.getPropertyValue('--up') : css.getPropertyValue('--down');
+  // Fläche
+  const g = ctx.createLinearGradient(0, T, 0, H - B);
+  g.addColorStop(0, col.trim() + '55'); g.addColorStop(1, col.trim() + '00');
+  ctx.beginPath(); ctx.moveTo(X(pts[0][0]), H - B);
+  pts.forEach(p => ctx.lineTo(X(p[0]), Y(p[1])));
+  ctx.lineTo(X(t1), H - B); ctx.closePath(); ctx.fillStyle = g; ctx.fill();
+  // Linie
+  ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(X(p[0]), Y(p[1])) : ctx.moveTo(X(p[0]), Y(p[1])));
+  ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke();
+  // letzter Punkt
+  const lp = pts[pts.length - 1];
+  ctx.beginPath(); ctx.arc(X(lp[0]), Y(lp[1]), 4, 0, 7); ctx.fillStyle = col; ctx.fill();
+}
+
+cv.addEventListener('mousemove', e => {
+  if (!geo) return;
+  const r = cv.getBoundingClientRect(), mx = e.clientX - r.left;
+  let best = geo.pts[0];
+  for (const p of geo.pts) if (Math.abs(geo.X(p[0]) - mx) < Math.abs(geo.X(best[0]) - mx)) best = p;
+  draw();
+  const x = geo.X(best[0]), y = geo.Y(best[1]);
+  ctx.strokeStyle = '#ffffff55'; ctx.beginPath(); ctx.moveTo(x, geo.T); ctx.lineTo(x, geo.H - geo.B); ctx.stroke();
+  ctx.beginPath(); ctx.arc(x, y, 4, 0, 7); ctx.fillStyle = '#fff'; ctx.fill();
+  const d = new Date(best[0] * 1000);
+  const tip = $('tip');
+  tip.innerHTML = `<b>${pf(best[1])}</b> · ${range === '1d' ? d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : d.toLocaleString('de-DE', { dateStyle: 'short', timeStyle: range === '5d' ? 'short' : undefined })}`;
+  tip.style.display = 'block';
+  tip.style.left = Math.min(x + 10, r.width - tip.offsetWidth - 4) + 'px';
+  tip.style.top = Math.max(y - 34, 0) + 'px';
+});
+cv.addEventListener('mouseleave', () => { $('tip').style.display = 'none'; draw(); });
+addEventListener('resize', draw);
+
+$('ranges').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  document.querySelectorAll('#ranges button').forEach(x => x.classList.toggle('on', x === b));
+  range = b.dataset.r; store.set('nvda-range', range); load();
+});
+
+// ---------- Depot ----------
+['dQty', 'dCost', 'dCur', 'dFeeBuy', 'dFeeSell'].forEach(id => {
+  $(id).addEventListener('input', () => { store.set(key(sym, id), $(id).value); if (live[sym]) { renderDepot(); renderTotal(); } });
+});
+// Position einer Aktie, Beträge in ihrer Depotwährung (cur)
+function position(s) {
+  const d = live[s]; if (!d) return null;
+  const n = id => parseFloat(setting(s, id)) || 0;
+  const cur = setting(s, 'dCur'), fx = d.eurusd;
+  if (cur !== d.meta.currency && !fx) return null;
+  const conv = v => fxConv(v, d.meta.currency, cur, fx);   // Kurswährung -> Depotwährung
+  const pts = d.points, px = pts.length ? pts[pts.length - 1][1] : d.meta.regularMarketPrice;
+  const prev = d.meta.previousClose ?? d.meta.chartPreviousClose;
+  const qty = n('dQty'), cost = n('dCost'), fees = n('dFeeBuy') + n('dFeeSell');
+  // Bewertung mit Tradegate-Kurs (EUR), sonst Yahoo-Kurs umgerechnet
+  const t = tg[s];
+  const value = t && cur === 'EUR' ? t.last * qty : conv(px) * qty;
+  // heute gekauft: „Heute“ = Entwicklung seit Kauf, sonst seit gestrigem Schluss
+  const b = STOCKS[s].bought ? new Date(STOCKS[s].bought) : null;
+  const today = b && b.toDateString() === new Date().toDateString();
+  const day = today ? value - cost : t && cur === 'EUR' && t.close ? (t.last - t.close) * qty : prev ? conv(px - prev) * qty : null;
+  return { cur, fx, qty, cost, fees, value, pl: value - cost - fees, day, today };
+}
+const signed = (v, fmt) => (v >= 0 ? '+' : '') + fmt(v);
+function renderDepot() {
+  const p = position(sym); if (!p) return;
+  const fmt = p.cur === 'EUR' ? eur : usd;
+  $('dValue').textContent = fmt(p.value);
+  $('dPL').className = 'v big ' + (p.pl >= 0 ? 'up' : 'down');
+  $('dPL').innerHTML = signed(p.pl, fmt) + ' <span style="font-size:16px">(' + pct(p.cost ? p.pl / (p.cost + p.fees) * 100 : 0) + ')</span>';
+  if (p.day != null) {
+    $('dDay').className = 'v ' + (p.day >= 0 ? 'up' : 'down');
+    $('dDay').textContent = signed(p.day, fmt);
+  }
+  $('dAvg').textContent = p.qty ? fmt(p.cost / p.qty) : '–';
+  const t = tg[sym];
+  $('dTitle').textContent = t && p.cur === 'EUR' ? `Position · Tradegate ${eur(t.last)}` : `Position ${STOCKS[sym].short || sym} (fiktiv)`;
+  const b = STOCKS[sym].bought && new Date(STOCKS[sym].bought);
+  $('dDayK').textContent = p.today ? `Seit Kauf heute ${b.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}` : 'Heute';
+  $('dPLk').textContent = p.fees ? `Gewinn / Verlust (inkl. ${fmt(p.fees)} Gebühren)` : 'Gewinn / Verlust';
+}
+// Gesamtdepot in Euro
+function renderTotal() {
+  let value = 0, paid = 0, pl = 0, fees = 0;
+  for (const s of SYMS) {
+    const p = position(s); if (!p) return;
+    const toEur = v => p.cur === 'EUR' ? v : v / p.fx;
+    value += toEur(p.value); paid += toEur(p.cost + p.fees); pl += toEur(p.pl); fees += toEur(p.fees);
+  }
+  const cell = (k, v, cls = '') => `<div><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+  const ud = v => v >= 0 ? 'up' : 'down';
+  if (view === 'split') document.title = `Depot ${eur(value)} ${pl >= 0 ? '▲' : '▼'}`;
+  const cash = START_CAPITAL - paid;
+  $('total').innerHTML =
+    cell(`Gesamtvermögen (Start ${eur(START_CAPITAL)})`, eur(cash + value)) +
+    cell('Verfügbares Geld', eur(cash)) +
+    cell('Depotwert', eur(value)) +
+    cell('Gesamt Gewinn / Verlust', signed(pl, eur) + ` <span style="font-size:14px">(${pct(paid ? pl / paid * 100 : 0)})</span>`, ud(pl)) +
+    cell('Gewinn / Verlust ohne Gebühren', signed(pl + fees, eur) + ` <span style="font-size:14px">(${pct(paid - fees ? (pl + fees) / (paid - fees) * 100 : 0)})</span>`, ud(pl + fees)) +
+    cell('Bezahlt inkl. Gebühren', eur(paid));
+}
+
+// ---------- Kursalarm ----------
+['aHi', 'aLo'].forEach(id => {
+  $(id).addEventListener('change', () => {
+    store.set(key(sym, id), $(id).value);
+    if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
+  });
+});
+let fired = {};
+function checkAlarm(s) {
+  const d = live[s]; if (!d) return;
+  const p = d.points.length ? d.points[d.points.length - 1][1] : d.meta.regularMarketPrice;
+  const hi = parseFloat(store.get(key(s, 'aHi'))), lo = parseFloat(store.get(key(s, 'aLo')));
+  const hit = (k, cond, msg) => {
+    if (cond && !fired[k]) {
+      fired[k] = true; $('aInfo').textContent = msg;
+      if ('Notification' in window && Notification.permission === 'granted') new Notification(s + ' Kursalarm', { body: msg });
+    } else if (!cond) fired[k] = false;
+  };
+  const f = v => money(v, d.meta.currency);
+  hit(s + 'hi', hi && p >= hi, `${s} über ${f(hi)}: ${f(p)}`);
+  hit(s + 'lo', lo && p <= lo, `${s} unter ${f(lo)}: ${f(p)}`);
+}
+
+// gespeicherten Zeitraum wiederherstellen
+showSym();
+const saved = store.get('nvda-range');
+if (saved) document.querySelector(`#ranges button[data-r="${saved}"]`)?.click(); else load();
+setInterval(load, 5000);
+
+// ---------- Tagesgewinner ----------
+let mvSeen = null;
+async function loadMovers() {
+  if (EMBED) return;
+  try {
+    const list = await (await fetch('/api/movers', { cache: 'no-store' })).json();
+    if (!Array.isArray(list)) throw new Error();
+    const cap = v => v >= 1e12 ? (v / 1e12).toFixed(1) + ' Bio. $' : (v / 1e9).toFixed(0) + ' Mrd. $';
+    const state = list[0]?.marketState;
+    const items = list.map(q => {
+      const ext = state === 'PRE' ? q.preMarketChangePercent : state?.startsWith('POST') ? q.postMarketChangePercent : null;
+      return `<a class="mv" href="https://finance.yahoo.com/quote/${q.symbol}" target="_blank" title="Börsenwert ${cap(q.marketCap)}">`
+        + `${mvSeen && !mvSeen.has(q.symbol) ? '🆕 ' : ''}<b>${q.symbol}</b><span class="nm">${q.shortName}</span>`
+        + `${money(q.regularMarketPrice, q.currency)} <span class="up">▲ ${pct(q.regularMarketChangePercent)}</span>`
+        + (ext != null ? `<span class="ext">${state === 'PRE' ? 'vorb.' : 'nachb.'} <span class="${ext >= 0 ? 'up' : 'down'}">${pct(ext)}</span></span>` : '')
+        + `</a>`;
+    }).join('');
+    // doppelt, damit das Band nahtlos weiterläuft; Inhalt nur tauschen, wenn sich etwas geändert hat
+    if ($('mvList').dataset.v !== items) {
+      $('mvList').dataset.v = items;
+      $('mvList').innerHTML = items + items;
+      $('mvList').style.setProperty('--dur', list.length * 6 + 's');
+    }
+    mvSeen = new Set(list.map(q => q.symbol));
+    const wann = state === 'REGULAR' ? 'heute live' : 'letzter Handelstag';
+    $('mvInfo').title = `Tagesgewinner USA (${wann}, ab 2 Mrd. $ Börsenwert) · aktualisiert ${new Date().toLocaleTimeString('de-DE')} · keine Kaufempfehlung`;
+  } catch { $('mvInfo').title = 'Tagesgewinner gerade nicht abrufbar'; }
+}
+loadMovers();
+setInterval(loadMovers, 60000);
+</script>
+</body>
+</html>
