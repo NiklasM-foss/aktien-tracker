@@ -10,6 +10,7 @@
     --up: #3fb950; --down: #f85149; --accent: #76b900;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }   /* sonst schlagen display-Regeln wie .addform das hidden-Attribut */
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
   main { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
