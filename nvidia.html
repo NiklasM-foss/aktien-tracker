@@ -165,7 +165,7 @@
     <input id="aQty" type="number" step="1" placeholder="Stück"> für insgesamt
     <input id="aCost" type="number" step="0.01" placeholder="Preis">
     <select id="aCur"><option value="EUR">€</option><option value="USD">$</option></select>
-    · Kaufgebühr <input id="aFee" type="number" step="0.01" placeholder="0">
+    · Kaufgebühr <input id="aFee" type="number" step="0.01" placeholder="0" title="Vorschlag: 0,3 %, mindestens 15 €">
     <button class="upd" id="aAdd" type="button">Hinzufügen</button>
     <button class="upd" id="aCancel" type="button">Abbrechen</button>
     <span id="aMsg"></span>
@@ -640,6 +640,10 @@ function renderTotal() {
 // ---------- Aktie hinzufügen / entfernen ----------
 function addMsg(t, err) { $('aMsg').textContent = t; $('aMsg').className = err ? 'err' : ''; }
 $('aCancel').addEventListener('click', () => { $('addCard').hidden = true; addMsg(''); });
+// Kaufgebühr aus dem Gesamtpreis vorschlagen, bis man selbst etwas einträgt
+let buyFeeTouched = false;
+$('aCost').addEventListener('input', () => { if (!buyFeeTouched) $('aFee').value = orderFee(parseFloat($('aCost').value) || 0); });
+$('aFee').addEventListener('input', () => buyFeeTouched = true);
 $('aQuery').addEventListener('keydown', e => { if (e.key === 'Enter') $('aAdd').click(); });
 $('aAdd').addEventListener('click', async () => {
   const query = $('aQuery').value.trim();
@@ -652,7 +656,7 @@ $('aAdd').addEventListener('click', async () => {
   $('aAdd').disabled = false;
   if (r?.status === 401) { editPw = null; lockInputs(); return alert('Passwort falsch.'); }
   if (!r?.ok) return addMsg(j.error || 'Hinzufügen fehlgeschlagen', true);
-  ['aQuery', 'aQty', 'aCost', 'aFee'].forEach(id => $(id).value = '');
+  ['aQuery', 'aQty', 'aCost', 'aFee'].forEach(id => $(id).value = ''); buyFeeTouched = false;
   $('addCard').hidden = true; addMsg('');
   sym = j.symbol; view = 'single'; store.set('tracker-sym', sym); store.set('tracker-view', view);
   applyStocks(j); showSym(); lockInputs(); load();
@@ -669,10 +673,10 @@ $('dDel').addEventListener('click', async () => {
 });
 
 // ---------- Verkauf ----------
-const sellFee = () => {   // Planspiel-Gebühr: 0,3 % vom Kurswert, mindestens 15 €
-  const v = (parseFloat($('sQty').value) || 0) * (parseFloat($('sPrice').value) || 0);
-  return v ? Math.max(15, Math.round(v * 0.003 * 100) / 100).toFixed(2) : '';
-};
+// Planspiel-Gebühr für Aktien, Fonds und ETFs: 0,3 % vom Kurswert, mindestens 15 € (Kauf wie Verkauf).
+// Das Planspiel rundet auf den Cent auf (5.358 € -> 16,08 €); vorher Gleitkomma-Reste wegrunden
+const orderFee = v => v ? Math.max(15, Math.ceil(Math.round(v * 0.3 * 1e6) / 1e6) / 100).toFixed(2) : '';
+const sellFee = () => orderFee((parseFloat($('sQty').value) || 0) * (parseFloat($('sPrice').value) || 0));
 let feeTouched = false;
 $('dSell').addEventListener('click', () => {
   if (!STOCKS[sym]) return;

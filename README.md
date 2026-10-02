@@ -48,7 +48,8 @@ Zeitpunkt. Die Position wird anteilig verkleinert (Einstand und Kaufgebühr nach
 Durchschnittskosten), die Differenz aus Erlös minus Gebühr minus anteiligem
 Einstand ist der realisierte Gewinn. Er fließt ins verfügbare Geld und in den
 Gesamtgewinn und steht als eigene Kachel *Realisiert* in der Übersicht. Die
-Gebühr wird nach der Planspiel-Regel vorgeschlagen (0,3 %, mindestens 15 €).
+Gebühr wird nach der Planspiel-Regel vorgeschlagen (Aktien, Fonds, ETFs: 0,3 % vom
+Kurswert, mindestens 15 €), beim Hinzufügen einer Aktie genauso die Kaufgebühr.
 Wird alles verkauft, verschwindet die Aktie aus der Liste, der Verkauf bleibt
 im Depot gespeichert. Ist `EDIT_PASSWORD`
 gesetzt, sind die Felder gesperrt; über **🔒 Bearbeiten** fragt die Seite das
