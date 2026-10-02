@@ -276,7 +276,7 @@ $('dEdit').addEventListener('click', async () => {
   if (editPw !== null) { editPw = null; lockInputs(); return; }
   const pw = prompt('Passwort zum Bearbeiten:');
   if (pw === null) return;
-  editPw = pw;
+  editPw = pw.trim();
   const r = await api('/api/login', {});
   if (!r.ok) { editPw = null; alert('Passwort falsch.'); }
   lockInputs();
@@ -621,7 +621,7 @@ $('upd').addEventListener('click', async () => {
   if (editPw === null) {
     const pw = prompt('Passwort für das Update:');
     if (pw === null) return;
-    editPw = pw;
+    editPw = pw.trim();
   }
   if (!confirm('Neuesten Stand aus dem Repo holen und neu starten?')) return;
   $('upd').disabled = true; $('upd').textContent = '⟳ lädt…';

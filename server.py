@@ -113,7 +113,7 @@ def update():
     return {"old": old, "new": new, "restart": new != old}
 
 def password_ok(given):
-    return not PASSWORD or hmac.compare_digest((given or "").encode(), PASSWORD.encode())
+    return not PASSWORD or hmac.compare_digest((given or "").strip().encode(), PASSWORD.strip().encode())
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
