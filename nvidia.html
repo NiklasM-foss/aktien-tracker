@@ -399,7 +399,7 @@ async function load() {
     SYMS.forEach((s, i) => live[s] = all[i]);
     await Promise.all(SYMS.map(async s => {
       if (!STOCKS[s]?.isin) return;
-      try { const j = await (await fetch('/api/tg?isin=' + STOCKS[s].isin, { cache: 'no-store' })).json(); if (j.last) tg[s] = j; }
+      try { const j = await (await fetch('/api/tg?isin=' + STOCKS[s].isin, { cache: 'no-store' })).json(); if (j.kurs) tg[s] = j; }
       catch {}
     }));
     data = cur || live[sym];
@@ -607,13 +607,13 @@ function position(s) {
   const pts = d.points, px = pts.length ? pts[pts.length - 1][1] : d.meta.regularMarketPrice;
   const prev = d.meta.previousClose ?? d.meta.chartPreviousClose;
   const qty = n('dQty'), cost = n('dCost'), fees = n('dFeeBuy') + n('dFeeSell');
-  // Bewertung mit Tradegate-Kurs (EUR), sonst Yahoo-Kurs umgerechnet
+  // Bewertung mit Tradegate-Geldkurs (EUR, wie im Planspiel), sonst Yahoo-Kurs umgerechnet
   const t = tg[s];
-  const value = t && cur === 'EUR' ? t.last * qty : conv(px) * qty;
+  const value = t && cur === 'EUR' ? t.kurs * qty : conv(px) * qty;
   // heute gekauft: „Heute“ = Entwicklung seit Kauf, sonst seit gestrigem Schluss
   const b = STOCKS[s]?.bought ? new Date(STOCKS[s].bought) : null;
   const today = b && b.toDateString() === new Date().toDateString();
-  const day = today ? value - cost : t && cur === 'EUR' && t.close ? (t.last - t.close) * qty : prev ? conv(px - prev) * qty : null;
+  const day = today ? value - cost : t && cur === 'EUR' && t.close ? (t.kurs - t.close) * qty : prev ? conv(px - prev) * qty : null;
   return { cur, fx, qty, cost, fees, value, pl: value - cost - fees, day, today };
 }
 const signed = (v, fmt) => (v >= 0 ? '+' : '') + fmt(v);
@@ -630,7 +630,7 @@ function renderDepot() {
   }
   $('dAvg').textContent = p.qty ? fmt(p.cost / p.qty) : '–';
   const t = tg[sym];
-  $('dTitle').textContent = t && p.cur === 'EUR' ? `Position · Tradegate ${eur(t.last)}` : `Position ${STOCKS[sym].short || sym} (fiktiv)`;
+  $('dTitle').textContent = t && p.cur === 'EUR' ? `Position · Tradegate ${eur(t.kurs)}` : `Position ${STOCKS[sym].short || sym} (fiktiv)`;
   const b = STOCKS[sym].bought && new Date(STOCKS[sym].bought);
   $('dDayK').textContent = p.today ? `Seit Kauf heute ${b.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}` : 'Heute';
   $('dPLk').textContent = p.fees ? `Gewinn / Verlust (inkl. ${fmt(p.fees)} Gebühren)` : 'Gewinn / Verlust';

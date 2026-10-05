@@ -81,7 +81,9 @@ def tradegate(isin):
     url = "https://www.tradegatebsx.com/refresh.php?isin=" + urllib.parse.quote(isin)
     d = fetch(url, 3)
     num = lambda v: float(v.replace(".", "").replace(",", ".")) if isinstance(v, str) else v
-    return {k: num(d.get(k)) for k in ("bid", "ask", "last", "close", "high", "low")}
+    t = {k: num(d.get(k)) for k in ("bid", "ask", "last", "close", "high", "low")}
+    t["kurs"] = t["bid"] or t["last"]   # Bewertung zum Geldkurs wie im Planspiel
+    return t
 
 def eurusd():
     try:
@@ -257,11 +259,11 @@ def position(sym, st, fx):
     if st.get("isin"):
         try:
             t = tradegate(st["isin"])
-            t = t if t.get("last") else None
+            t = t if t.get("kurs") else None
         except Exception:
             t = None
     use_tg = bool(t and cur == "EUR")
-    value = t["last"] * qty if use_tg else conv(px) * qty
+    value = t["kurs"] * qty if use_tg else conv(px) * qty
     try:
         today = datetime.fromisoformat(st.get("bought") or "").date() == date.today()
     except ValueError:
@@ -269,7 +271,7 @@ def position(sym, st, fx):
     if today:
         day = value - cost
     elif use_tg and t.get("close"):
-        day = (t["last"] - t["close"]) * qty
+        day = (t["kurs"] - t["close"]) * qty
     else:
         day = conv(px - prev) * qty if prev else None
     to_eur = lambda v: None if v is None else (v if cur == "EUR" else v / fx)
@@ -279,7 +281,7 @@ def position(sym, st, fx):
     return {
         "symbol": sym, "name": st.get("name"), "short": st.get("short") or sym, "isin": st.get("isin") or None,
         "currency": ccy, "price": regular,
-        "price_eur": t["last"] if t else (px if ccy == "EUR" else (px / fx if fx and ccy == "USD" else None)),
+        "price_eur": t["kurs"] if t else (px if ccy == "EUR" else (px / fx if fx and ccy == "USD" else None)),
         "change_pct": (regular - rprev) / rprev * 100 if regular and rprev else None,
         "qty": qty, "value": to_eur(value), "cost": to_eur(cost), "fees": to_eur(fees),
         "pl": to_eur(pl), "pl_pct": pl / (cost + fees) * 100 if cost + fees else 0.0,
