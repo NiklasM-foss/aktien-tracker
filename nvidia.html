@@ -299,12 +299,13 @@ const tg = {};     // sym -> Tradegate-Kurs in EUR (Depotbewertung wie in der Ap
 const key = (s, id) => s.toLowerCase() + '-' + id;
 // ändern nur mit Passwort
 let PROTECTED = true, editPw = null;
+let PLANSPIEL = null;   // verknüpftes Planspiel-Konto: Depot kommt automatisch, Bearbeiten aus
 const DEPOT_IDS = ['dQty', 'dCost', 'dCur', 'dFeeBuy', 'dFeeSell'];
 const setting = (s, id) => STOCKS[s]?.[id] ?? '';
-const editing = () => !PROTECTED || editPw !== null;
+const editing = () => !PLANSPIEL && (!PROTECTED || editPw !== null);
 function lockInputs() {
   [...DEPOT_IDS, 'dGreen'].forEach(id => $(id).disabled = !editing());
-  $('dEdit').hidden = !PROTECTED;
+  $('dEdit').hidden = !PROTECTED || !!PLANSPIEL;
   $('dEdit').classList.toggle('on', editPw !== null);
   $('dEdit').textContent = editPw !== null ? 'Fertig' : '🔒 Bearbeiten';
   $('dDel').hidden = !editing();
@@ -319,6 +320,7 @@ function applyStocks(j) {
   STOCKS = j.stocks; SYMS = Object.keys(STOCKS);
   if (j.start_capital != null) START_CAPITAL = j.start_capital;
   if (j.realized) REALIZED = j.realized;
+  if ('planspiel' in j) { PLANSPIEL = j.planspiel; if (PLANSPIEL) editPw = null; }
   if (!STOCKS[sym]) { sym = SYMS[0] || ''; lastPrice = null; }
   if (changed) { buildTabs(); $('split').innerHTML = ''; showSym(); }
   return changed;
@@ -421,7 +423,10 @@ async function load() {
     showSurge();
     renderTotal();
     $('dot').className = 'dot live';
-    $('status').textContent = 'live · ' + new Date().toLocaleTimeString('de-DE');
+    $('status').textContent = 'live · ' + new Date().toLocaleTimeString('de-DE') + (PLANSPIEL ? ' · 🔗 Planspiel' : '');
+    $('status').title = !PLANSPIEL ? '' : PLANSPIEL.error ? 'Abgleich mit dem Planspiel-Konto gestört: ' + PLANSPIEL.error
+      : `Depot mit dem Planspiel-Konto verknüpft, letzter Abgleich ${PLANSPIEL.synced ? new Date(PLANSPIEL.synced).toLocaleTimeString('de-DE') : '–'}`;
+    if (PLANSPIEL?.error) $('dot').className = 'dot err';
   } catch (e) {
     $('dot').className = 'dot err';
     $('status').textContent = 'Fehler – Server läuft?';
@@ -657,7 +662,7 @@ function renderDepot() {
     $('dShareK').textContent = `Anteil am Depot · Nachkauf bis ${eur(room)}`;
   }
   const t = tg[sym];
-  $('dTitle').textContent = t && p.cur === 'EUR' ? `Position · Tradegate ${eur(t.kurs)}` : `Position ${STOCKS[sym].short || sym} (fiktiv)`;
+  $('dTitle').textContent = t && p.cur === 'EUR' ? `Position · ${t.source || 'Tradegate'} ${eur(t.kurs)}` : `Position ${STOCKS[sym].short || sym} (fiktiv)`;
   const b = STOCKS[sym].bought && new Date(STOCKS[sym].bought);
   $('dDayK').textContent = p.today ? `Seit Kauf heute ${b.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}` : 'Heute';
   $('dPLk').textContent = p.fees ? `Gewinn / Verlust (inkl. ${fmt(p.fees)} Gebühren)` : 'Gewinn / Verlust';
@@ -695,7 +700,7 @@ function renderTotal() {
     cell('Gewinn / Verlust ohne Gebühren', signed(pl + fees, eur) + ` <span style="font-size:14px">(${pct(invested - fees ? (pl + fees) / (invested - fees) * 100 : 0)})</span>`, ud(pl + fees)) +
     cell('Bezahlt inkl. Gebühren', eur(paid)) +
     (REALIZED.count ? cell(`Realisiert (${REALIZED.count} ${REALIZED.count > 1 ? 'Verkäufe' : 'Verkauf'})`, signed(REALIZED.pl, eur), ud(REALIZED.pl)) : '') +
-    (hasGreen ? cell('<span title="Kursgewinne/-verluste der nachhaltigen Papiere (*/**), ohne Gebühren">Nachhaltigkeitsertrag</span>', signed(green, eur), ud(green)) : '');
+    (hasGreen ? cell(`<span title="Kursgewinne/-verluste der nachhaltigen Papiere (*/**), ohne Gebühren${PLANSPIEL?.green_pl != null ? ` · Planspiel (Vortagesendstand): ${eur(PLANSPIEL.green_pl)}` : ''}">Nachhaltigkeitsertrag</span>`, signed(green, eur), ud(green)) : '');
 }
 
 // ---------- Aktie hinzufügen / entfernen ----------

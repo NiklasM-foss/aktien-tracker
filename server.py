@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Kleiner Proxy fuer Yahoo-Finance-Kurse (Browser darf Yahoo wegen CORS nicht direkt abfragen)."""
-import copy, hmac, json, os, re, subprocess, threading, time, urllib.request, urllib.parse
+import copy, hmac, json, os, re, subprocess, threading, time, urllib.error, urllib.request, urllib.parse
 from datetime import date, datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
@@ -36,6 +36,15 @@ DEFAULT_STOCKS = {
                "bought": "2026-10-02T11:38:13",
                "dQty": "30", "dCost": "4374.60", "dCur": "EUR", "dFeeBuy": "15", "dFeeSell": "0"},
 }
+# Planspiel-Konto (optional): Depot, Kurse und Buchungen automatisch aus dem Wettbewerbsdepot uebernehmen
+PS_USER = os.environ.get("PLANSPIEL_USER", "")
+PS_PASSWORD = os.environ.get("PLANSPIEL_PASSWORD", "")
+PS_DEPOT = os.environ.get("PLANSPIEL_DEPOT", "")   # Depot-ID; leer = erstes Depot des Kontos (Wettbewerbsdepot)
+PS_INTERVAL = int(os.environ.get("PLANSPIEL_INTERVAL", 30))   # Sekunden zwischen zwei Abfragen
+PS_API = "https://trading.planspiel-boerse.de/stockcontest/services/api/"
+PS_XHEADER = os.environ.get("PLANSPIEL_XHEADER", "3abab342352e088ab2edde2c495acabd")   # fester Wert aus der Web-App
+PS = {"token": os.environ.get("PLANSPIEL_TOKEN") or None, "depot": PS_DEPOT, "active": False, "error": None,
+      "synced": None, "info": None, "quotes": {}, "trades": None, "trades_at": 0}
 SYMBOL_RE = re.compile(r"^[A-Za-z0-9.^=-]{1,15}$")
 RANGES = {"1d": "1m", "5d": "5m", "1mo": "30m", "6mo": "1d", "1y": "1d", "5y": "1wk"}
 
@@ -77,12 +86,16 @@ def movers(count=10):
     return out
 
 def tradegate(isin):
-    """Echtzeit-Kurs in EUR von Tradegate (so rechnet auch die Depot-App)."""
+    """Kurs in EUR zur Depotbewertung: Planspiel-Kurs (Stuttgart), wenn das Konto verknuepft ist, sonst Tradegate."""
+    q = PS["quotes"].get(isin)
+    if q and time.time() - q["at"] < 300:
+        return {k: q[k] for k in ("bid", "ask", "last", "close", "kurs", "source")}
     url = "https://www.tradegatebsx.com/refresh.php?isin=" + urllib.parse.quote(isin)
     d = fetch(url, 3)
     num = lambda v: float(v.replace(".", "").replace(",", ".")) if isinstance(v, str) else v
     t = {k: num(d.get(k)) for k in ("bid", "ask", "last", "close", "high", "low")}
     t["kurs"] = t["bid"] or t["last"]   # Bewertung zum Geldkurs wie im Planspiel
+    t["source"] = "Tradegate"
     return t
 
 def eurusd():
@@ -97,6 +110,141 @@ def search(query):
     quotes = fetch("https://query1.finance.yahoo.com/v1/finance/search?" + q, 300).get("quotes", [])
     quotes = [x for x in quotes if x.get("symbol") and x.get("quoteType") in ("EQUITY", "ETF", "MUTUALFUND")]
     return sorted(quotes, key=lambda x: not x["symbol"].endswith(".DE"))
+
+# ---------- Planspiel-Konto ----------
+def ps_call(path, body=None, retry=True):
+    """Aufruf der Planspiel-API mit Bearer-Token; bei abgelaufenem Token einmal neu einloggen."""
+    if not PS["token"]:
+        ps_login()
+    req = urllib.request.Request(PS_API + path, data=None if body is None else json.dumps(body).encode(), headers={
+        "Content-Type": "application/json", "Accept": "application/json", "User-Agent": "Mozilla/5.0",
+        "x-angular-connect-string": PS_XHEADER, "Authorization": "Bearer " + PS["token"]})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403) and retry and PS_USER:
+            PS["token"] = None
+            return ps_call(path, body, retry=False)
+        raise
+
+def ps_login():
+    if not (PS_USER and PS_PASSWORD):
+        raise RuntimeError("PLANSPIEL_USER/PLANSPIEL_PASSWORD fehlen")
+    req = urllib.request.Request(PS_API + "v-ms7/authenticate",
+                                 data=json.dumps({"userName": PS_USER, "password": PS_PASSWORD}).encode(),
+                                 headers={"Content-Type": "application/json", "Accept": "application/json",
+                                          "User-Agent": "Mozilla/5.0", "x-angular-connect-string": PS_XHEADER})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            d = json.load(r)
+    except urllib.error.HTTPError as e:
+        raise PermissionError(f"Planspiel-Login fehlgeschlagen (HTTP {e.code})")
+    if not d.get("success") or not d.get("result", {}).get("token"):
+        raise PermissionError("Planspiel-Login fehlgeschlagen")
+    PS["token"] = d["result"]["token"]["accessToken"]
+    if not PS["depot"]:
+        PS["depot"] = str(d["result"]["user"]["userPortfolios"][0]["id"])
+
+def ps_symbol(isin, known):
+    """Yahoo-Kuerzel zu einer ISIN: vorhandene Zuordnung behalten, sonst wie beim Hinzufuegen suchen."""
+    if isin in known:
+        return known[isin]
+    hits = search(isin)
+    if not hits:
+        raise ValueError(f"Keine Aktie zur ISIN {isin} bei Yahoo gefunden")
+    known[isin] = (hits[0]["symbol"], " ".join((hits[0].get("longname") or hits[0].get("shortname") or "").split())[:60])
+    return known[isin]
+
+def ps_apply(trades):
+    """Depot aus den Planspiel-Buchungen neu aufbauen (gleiche Rechnung wie sell_stock)."""
+    with DEPOT_LOCK:
+        old = load_depot()
+    known = {st["isin"]: (sym, st.get("name")) for sym, st in old["stocks"].items() if st.get("isin")}
+    known.update({x["isin"]: (x["symbol"], x.get("name")) for x in old.get("sales", []) if x.get("isin")})
+    stocks, sales = {}, []
+    for t in sorted(trades, key=lambda t: (t["date"], t["id"])):
+        o, kind, when = t.get("order") or {}, t["transactionType"], t["date"].replace(" ", "T")[:19]
+        ins = o.get("instrument") or {}
+        if kind not in ("BUY", "SELL") or not ins.get("isin"):
+            # Dividende, Ausschuettung, Orderloeschung usw.: nur der Betrag zaehlt fuers verfuegbare Geld
+            sales.append({"type": kind, "name": ins.get("name") or kind, "time": when, "realized_eur": t["amount"],
+                          "basis_eur": 0, "fees_eur": max(0.0, -t["amount"]) if "FEE" in kind else 0})
+            continue
+        isin, qty, px, fee = ins["isin"], o["quantity"], o["executionPrice"], o.get("transactionCosts") or 0.0
+        sym, name = ps_symbol(isin, known)
+        if kind == "BUY":
+            st = stocks.setdefault(isin, {"symbol": sym, "isin": isin, "name": name or ins.get("name"), "bought": when,
+                                          "qty": 0.0, "cost": 0.0, "fee": 0.0})
+            st["qty"] += qty; st["cost"] += qty * px; st["fee"] += fee
+            st["green"] = ins.get("sustainability")
+            continue
+        st = stocks[isin]
+        rest = st["qty"] - qty < 1e-9
+        basis = st["cost"] * qty / st["qty"]
+        buy_fee = st["fee"] if rest else 0.0   # Kaufgebuehr erst mit dem letzten Stueck realisiert
+        sales.append({"symbol": sym, "isin": isin, "name": st["name"], "time": when, "qty": qty, "price": px,
+                      "cur": "EUR", "fee": fee, "basis": round(basis, 4), "buy_fee": round(buy_fee, 4),
+                      "realized_eur": round(qty * px - fee - basis - buy_fee, 4),
+                      "basis_eur": round(basis + buy_fee, 4), "fees_eur": round(fee + buy_fee, 4),
+                      "price_pl_eur": round(qty * px - basis, 4), "green": bool(ins.get("sustainability"))})
+        if rest:
+            del stocks[isin]
+        else:
+            st["qty"] -= qty; st["cost"] -= basis
+    num = lambda v: f"{v:.4f}".rstrip("0").rstrip(".")
+    new = {}
+    for st in stocks.values():
+        prev = old["stocks"].get(st["symbol"], {})
+        new[st["symbol"]] = {**{k: prev[k] for k in ("short",) if k in prev}, "isin": st["isin"], "name": st["name"],
+                             "bought": st["bought"], "dQty": num(st["qty"]), "dCost": num(st["cost"]), "dCur": "EUR",
+                             "dFeeBuy": num(st["fee"]), "dFeeSell": "0", "green": "1" if st["green"] else ""}
+    # bisherige Reihenfolge der Tabs beibehalten, neue hinten anfuegen
+    order = [s for s in old["stocks"] if s in new] + [s for s in new if s not in old["stocks"]]
+    depot = {"version": 2, "start_capital": old["start_capital"],
+             "stocks": {s: new[s] for s in order}, "sales": sales}
+    if depot != old:
+        with DEPOT_LOCK:
+            _write(depot)
+
+def ps_sync():
+    if not PS["depot"]:   # Token aus PLANSPIEL_TOKEN ohne Login: Depot-ID aus dem Benutzerprofil
+        PS["depot"] = str(ps_call("v-ms8/user/getUser")["userPortfolios"][0]["id"])
+    port = ps_call(f"v-ms1/portfolio/getPortfolioWithItems?portfolioId={PS['depot']}&withItems=true")
+    now, p = time.time(), port["portfolio"]
+    for it in port.get("items", []):
+        ins = it["instrument"]
+        if ins.get("isin") and ins.get("bid"):
+            perf = ins.get("performanceAbs")
+            PS["quotes"][ins["isin"]] = {"bid": ins["bid"], "ask": ins.get("ask"), "last": ins["bid"],
+                                         "close": ins["bid"] - perf if perf is not None else None,
+                                         "kurs": ins["bid"], "source": "Planspiel", "at": now}
+    PS["info"] = {"depot": p.get("name"), "cash": p.get("credit"), "value": p.get("value"),
+                  "pl": p.get("performanceAbsTotal"), "pl_pct": p.get("performanceRelTotal"),
+                  "green_pl": p.get("performanceAbsSustainability"), "trades": p.get("numTrades")}
+    # Buchungen nur neu holen, wenn sich die Zahl der Trades geaendert hat (Dividenden spaetestens nach 10 Minuten)
+    if p.get("numTrades") != PS["trades"] or now - PS["trades_at"] > 600:
+        ps_apply(ps_call(f"v-ms1/transaction/getTransactions?portfolioId={PS['depot']}"))
+        PS["trades"], PS["trades_at"] = p.get("numTrades"), now
+    PS["synced"], PS["error"] = datetime.now().isoformat(timespec="seconds"), None
+
+def ps_status():
+    if not PS["active"]:
+        return None
+    return {"synced": PS["synced"], "error": PS["error"], **(PS["info"] or {})}
+
+def ps_loop():
+    while True:
+        try:
+            ps_sync()
+            wait = PS_INTERVAL
+        except PermissionError as e:   # falsches Passwort: selten probieren, damit das Konto nicht gesperrt wird
+            PS["error"], wait = str(e), 900
+            print(e, flush=True)
+        except Exception as e:
+            PS["error"], wait = f"{type(e).__name__}: {e}", PS_INTERVAL * 2
+            print("Planspiel-Abgleich:", PS["error"], flush=True)
+        time.sleep(wait)
 
 # ---------- Depot (Aktienliste + Kaufdaten) ----------
 def _write(depot):
@@ -228,10 +376,10 @@ def sell_stock(symbol, qty, price, fee, when):
 def realized_totals(depot):
     sales = depot.get("sales", [])
     return {
-        "pl": round(sum(x["realized_eur"] for x in sales), 2),
-        "basis": round(sum(x["basis_eur"] for x in sales), 2),
-        "fees": round(sum(x["fees_eur"] for x in sales), 2),
-        "count": len(sales),
+        "pl": round(sum(x["realized_eur"] for x in sales), 4),
+        "basis": round(sum(x["basis_eur"] for x in sales), 4),
+        "fees": round(sum(x["fees_eur"] for x in sales), 4),
+        "count": sum(1 for x in sales if x.get("qty")),   # nur Verkaeufe, keine Dividenden o.ae.
         # Nachhaltigkeitsertrag: Kursgewinne/-verluste verkaufter nachhaltiger Papiere (ohne Gebuehren)
         "green_pl": round(sum(x.get("price_pl_eur", 0) for x in sales if x.get("green")), 2),
     }
@@ -293,7 +441,7 @@ def position(sym, st, fx):
         "qty": qty, "value": to_eur(value), "cost": to_eur(cost), "fees": to_eur(fees),
         "pl": to_eur(pl), "pl_pct": pl / (cost + fees) * 100 if cost + fees else 0.0,
         "day": to_eur(day), "bought": st.get("bought"), "bought_today": today, "green": st.get("green") == "1",
-        "source": "tradegate" if use_tg else "yahoo",
+        "source": t["source"].lower() if use_tg else "yahoo",
     }
 
 def summary():
@@ -329,7 +477,7 @@ def summary():
         "paid": r2(paid), "fees": r2(fees + real["fees"]), "pl": r2(pl),
         "pl_pct": r2(pl / invested * 100 if invested else 0.0),
         "pl_ex_fees": r2(pl + fees + real["fees"]), "day": r2(day),
-        "realized": real["pl"], "green_pl": r2(green_pl), "sales": depot.get("sales", []),
+        "realized": real["pl"], "green_pl": r2(green_pl), "sales": depot.get("sales", []), "planspiel": ps_status(),
         "stocks": stocks,
     }
 
@@ -389,7 +537,8 @@ class H(BaseHTTPRequestHandler):
                 d = load_depot()
                 self.send(200, json.dumps({"protected": bool(PASSWORD), "start_capital": d["start_capital"],
                                            "stocks": d["stocks"], "realized": realized_totals(d),
-                                           "sales": d.get("sales", [])}).encode(), "application/json")
+                                           "sales": d.get("sales", []), "planspiel": ps_status()}).encode(),
+                          "application/json")
             elif u.path == "/api/summary":
                 self.send(200, json.dumps(summary()).encode(), "application/json")
             elif u.path == "/api/version":
@@ -430,6 +579,9 @@ class H(BaseHTTPRequestHandler):
                 return self.send(200, json.dumps(update()).encode(), "application/json")
             except Exception as e:
                 return self.send(500, json.dumps({"error": str(e)}).encode(), "application/json")
+        if PS["active"]:
+            return self.send(409, json.dumps({"error": "Depot ist mit dem Planspiel-Konto verknuepft"}).encode(),
+                             "application/json")
         try:
             symbol = body.get("symbol")
             if u.path == "/api/stock/add":
@@ -449,6 +601,10 @@ class H(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     import threading, webbrowser
     srv = ThreadingHTTPServer((HOST, PORT), H)
+    if (PS_USER and PS_PASSWORD) or PS["token"]:
+        PS["active"] = True
+        threading.Thread(target=ps_loop, daemon=True).start()
+        print("Depot wird mit dem Planspiel-Konto abgeglichen", flush=True)
     print(f"Aktien-Tracker laeuft auf http://localhost:{PORT}  (Fenster offen lassen, Strg+C beendet)")
     if not os.environ.get("NO_BROWSER"):
         threading.Timer(1, lambda: webbrowser.open(f"http://localhost:{PORT}")).start()
