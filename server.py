@@ -17,7 +17,7 @@ CACHE = {}  # url -> (zeit, daten)
 DEPOT_FILE = Path(os.environ.get("DEPOT_FILE", HERE / "depot.json"))
 DEPOT_LOCK = threading.Lock()
 DEPOT_FIELDS = {"dQty", "dCost", "dCur", "dFeeBuy", "dFeeSell"}
-EDIT_FIELDS = DEPOT_FIELDS | {"short"}
+EDIT_FIELDS = DEPOT_FIELDS | {"short", "green"}   # green = "1": nachhaltig (* bzw. ** im Planspiel)
 ISIN_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")
 MAX_STOCKS = 30
 START_CAPITAL = 50000   # fiktives Startgeld in Euro
@@ -128,6 +128,8 @@ def save_depot(symbol, values):
             raise ValueError("ungueltiges Feld " + str(k))
         if k == "dCur" and v not in ("EUR", "USD"):
             raise ValueError("ungueltige Waehrung")
+        if k == "green" and v not in ("", "1"):
+            raise ValueError("ungueltiger Wert fuer nachhaltig")
         clean[k] = v.strip() if k == "short" else v
     with DEPOT_LOCK:
         depot = load_depot()
@@ -177,6 +179,8 @@ def add_stock(query, values):
 def sell_stock(symbol, qty, price, fee, when):
     """Teilverkauf/Verkauf: Position anteilig verkleinern (Durchschnittskosten), Gewinn realisieren.
 
+    Wie im Planspiel bleibt die Kaufgebuehr bei einem Teilverkauf komplett bei der Restposition
+    und wird erst mit dem letzten Stueck realisiert.
     Verfuegbares Geld = Startkapital - Bezahltes der offenen Positionen + realisierter Gewinn,
     deshalb reicht es, je Verkauf den realisierten Gewinn (in Euro) mitzuschreiben.
     """
@@ -196,8 +200,9 @@ def sell_stock(symbol, qty, price, fee, when):
         have = _num(st.get("dQty"))
         if qty > have + 1e-9:
             raise ValueError(f"Nur {have:g} Stueck im Depot")
-        frac = qty / have
-        basis, buy_fee = _num(st.get("dCost")) * frac, _num(st.get("dFeeBuy")) * frac
+        rest = have - qty < 1e-9
+        basis = _num(st.get("dCost")) * qty / have
+        buy_fee = _num(st.get("dFeeBuy")) if rest else 0.0
         realized = qty * price - fee - basis - buy_fee
         fx = 1.0
         if st.get("dCur", "EUR") != "EUR":
@@ -207,16 +212,16 @@ def sell_stock(symbol, qty, price, fee, when):
         eur = lambda v: round(v / fx, 2)
         depot.setdefault("sales", []).append({
             "symbol": symbol, "name": st.get("name"), "time": when, "qty": qty, "price": price,
-            "cur": st.get("dCur", "EUR"), "fee": fee, "basis": round(basis, 2), "buy_fee": round(buy_fee, 2),
+            "cur": st.get("dCur", "EUR"), "fee": fee, "basis": round(basis, 2), "buy_fee": round(buy_fee, 4),
             "realized_eur": eur(realized), "basis_eur": eur(basis + buy_fee), "fees_eur": eur(fee + buy_fee),
+            "price_pl_eur": eur(qty * price - basis), "green": st.get("green") == "1",
         })
-        if have - qty < 1e-9:
+        if rest:
             del depot["stocks"][symbol]   # alles verkauft
         else:
             fmt = lambda v: f"{v:.2f}".rstrip("0").rstrip(".") if v % 1 else f"{v:.0f}"
             st["dQty"] = fmt(have - qty)
             st["dCost"] = f"{_num(st.get('dCost')) - basis:.2f}"
-            st["dFeeBuy"] = f"{_num(st.get('dFeeBuy')) - buy_fee:.2f}"
         _write(depot)
     return depot
 
@@ -227,6 +232,8 @@ def realized_totals(depot):
         "basis": round(sum(x["basis_eur"] for x in sales), 2),
         "fees": round(sum(x["fees_eur"] for x in sales), 2),
         "count": len(sales),
+        # Nachhaltigkeitsertrag: Kursgewinne/-verluste verkaufter nachhaltiger Papiere (ohne Gebuehren)
+        "green_pl": round(sum(x.get("price_pl_eur", 0) for x in sales if x.get("green")), 2),
     }
 
 def delete_stock(symbol):
@@ -285,7 +292,7 @@ def position(sym, st, fx):
         "change_pct": (regular - rprev) / rprev * 100 if regular and rprev else None,
         "qty": qty, "value": to_eur(value), "cost": to_eur(cost), "fees": to_eur(fees),
         "pl": to_eur(pl), "pl_pct": pl / (cost + fees) * 100 if cost + fees else 0.0,
-        "day": to_eur(day), "bought": st.get("bought"), "bought_today": today,
+        "day": to_eur(day), "bought": st.get("bought"), "bought_today": today, "green": st.get("green") == "1",
         "source": "tradegate" if use_tg else "yahoo",
     }
 
@@ -304,20 +311,25 @@ def summary():
     real = realized_totals(depot)
     pl = sum(p["pl"] for p in stocks) + real["pl"]   # offene Positionen plus realisierte Verkaeufe
     cash = depot["start_capital"] - paid + real["pl"]
+    total = cash + value   # Depotgesamtwert; je Wertpapier hoechstens 20 % davon kaufbar
+    green_pl = real["green_pl"] + sum(p["value"] - p["cost"] for p in stocks if p["green"])
+    for p in stocks:
+        p["share_pct"] = p["value"] / total * 100 if total else None
+        p["buy_room"] = max(0.0, total * 0.2 - p["value"])
     invested = paid + real["basis"]
     r2 = lambda v: None if v is None else round(v, 2)
     day = sum(p["day"] for p in stocks if p["day"] is not None)
     for p in stocks:
-        for k in ("value", "cost", "fees", "pl", "pl_pct", "day", "price_eur", "change_pct"):
+        for k in ("value", "cost", "fees", "pl", "pl_pct", "day", "price_eur", "change_pct", "share_pct", "buy_room"):
             p[k] = r2(p[k])
     return {
         "updated": datetime.now().astimezone().isoformat(timespec="seconds"),
         "complete": not errors, "errors": errors, "eurusd": fx,
-        "start_capital": depot["start_capital"], "cash": r2(cash), "value": r2(value), "total": r2(cash + value),
+        "start_capital": depot["start_capital"], "cash": r2(cash), "value": r2(value), "total": r2(total),
         "paid": r2(paid), "fees": r2(fees + real["fees"]), "pl": r2(pl),
         "pl_pct": r2(pl / invested * 100 if invested else 0.0),
         "pl_ex_fees": r2(pl + fees + real["fees"]), "day": r2(day),
-        "realized": real["pl"], "sales": depot.get("sales", []),
+        "realized": real["pl"], "green_pl": r2(green_pl), "sales": depot.get("sales", []),
         "stocks": stocks,
     }
 
