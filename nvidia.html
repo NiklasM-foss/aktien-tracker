@@ -76,7 +76,7 @@
   .total .k { color: var(--muted); font-size: 12px; }
   .total .v { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .split { display: none; grid-template-columns: 1fr; gap: 10px; margin-top: 12px; }
-  .split iframe { width: 100%; height: max(150px, calc((100vh - 235px) / var(--n, 4) - 10px)); border: 1px solid var(--line);
+  .split iframe { width: 100%; height: max(80px, calc((100vh - 235px) / var(--n, 4) - 10px)); border: 1px solid var(--line);
                   border-radius: 12px; background: var(--bg); display: block; }
   /* Zeilen-Kachel im Dashboard: Kurs | Position | Chart nebeneinander */
   body.is-row { min-height: 0; height: 100vh; overflow: hidden; }
@@ -104,6 +104,29 @@
   body.is-row .ranges { margin-bottom: 4px; }
   body.is-row .ranges button { padding: 2px 8px; font-size: 11px; }
   body.is-row .chart-wrap { flex: 1; height: auto; min-height: 0; }
+  /* viele Aktien: Zeilen werden flacher, damit alle ohne Scrollen auf den Bildschirm passen */
+  @media (max-height: 140px) {
+    body.is-row.is-embed main { padding: 4px 10px; column-gap: 10px; }
+    body.is-row.is-embed h1 { font-size: 13px; }
+    body.is-row.is-embed .sub { display: none; }
+    body.is-row.is-embed .price-row { margin: 2px 0 0; }
+    body.is-row.is-embed .price { font-size: 24px; }
+    body.is-row.is-embed .chg { font-size: 13px; }
+    body.is-row.is-embed .ext { font-size: 11px; margin: 0; min-height: 0; }
+    body.is-row.is-embed .depot { padding: 4px 10px; gap: 0 12px; border-radius: 8px; }
+    body.is-row.is-embed .depot .k { font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    body.is-row.is-embed .depot .v { font-size: 13px; }
+    body.is-row.is-embed .depot .v.big { font-size: 17px; }
+    body.is-row.is-embed #chartCard { padding: 4px 8px; border-radius: 8px; }
+    body.is-row.is-embed .ranges { margin-bottom: 2px; gap: 4px; }
+    body.is-row.is-embed .ranges button { padding: 0 6px; font-size: 10px; }
+  }
+  /* sehr flach: nur das Wichtigste (Kurs, Wert, Gewinn, Chart) */
+  @media (max-height: 100px) {
+    body.is-row.is-embed .ext, body.is-row.is-embed .ranges { display: none; }
+    body.is-row.is-embed .depot > div:nth-child(3), body.is-row.is-embed .depot > div:nth-child(4) { display: none; }
+    body.is-row.is-embed .price { font-size: 22px; }
+  }
   body.is-split main { max-width: none; }
   body.is-split #single, body.is-split header .sub { display: none; }
   body.is-split .split { display: grid; }
