@@ -58,6 +58,12 @@ def chart(symbol, rng):
     res = fetch(url, 3 if rng == "1d" else 60)["chart"]["result"][0]
     ind = res["indicators"]["quote"][0]
     pts = [[t, c] for t, c in zip(res.get("timestamp", []), ind.get("close", [])) if c is not None]
+    if rng == "1d" and not pts:
+        # vor Handelsbeginn (z.B. Xetra/Mailand) liefert Yahoo für heute nichts -> letzten Handelstag zeigen
+        pts = chart(symbol, "5d")["points"]
+        if pts:
+            last = datetime.fromtimestamp(pts[-1][0]).date()
+            pts = [p for p in pts if datetime.fromtimestamp(p[0]).date() == last]
     return {"meta": res["meta"], "points": pts}
 
 def movers(count=10):
