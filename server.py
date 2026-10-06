@@ -37,14 +37,16 @@ DEFAULT_STOCKS = {
                "dQty": "30", "dCost": "4374.60", "dCur": "EUR", "dFeeBuy": "15", "dFeeSell": "0"},
 }
 # Planspiel-Konto (optional): Depot, Kurse und Buchungen automatisch aus dem Wettbewerbsdepot uebernehmen
-PS_USER = os.environ.get("PLANSPIEL_USER", "")
-PS_PASSWORD = os.environ.get("PLANSPIEL_PASSWORD", "")
+# Zugangsdaten per Umgebungsvariable oder ueber den Login-Knopf (dann in PLANSPIEL_FILE, nur fuer den Dienst lesbar)
+PS_FILE = Path(os.environ.get("PLANSPIEL_FILE", DEPOT_FILE.with_name("planspiel.json")))
 PS_DEPOT = os.environ.get("PLANSPIEL_DEPOT", "")   # Depot-ID; leer = erstes Depot des Kontos (Wettbewerbsdepot)
 PS_INTERVAL = int(os.environ.get("PLANSPIEL_INTERVAL", 30))   # Sekunden zwischen zwei Abfragen
 PS_API = "https://trading.planspiel-boerse.de/stockcontest/services/api/"
 PS_XHEADER = os.environ.get("PLANSPIEL_XHEADER", "3abab342352e088ab2edde2c495acabd")   # fester Wert aus der Web-App
 PS = {"token": os.environ.get("PLANSPIEL_TOKEN") or None, "depot": PS_DEPOT, "active": False, "error": None,
-      "synced": None, "info": None, "quotes": {}, "trades": None, "trades_at": 0}
+      "synced": None, "info": None, "quotes": {}, "trades": None, "trades_at": 0,
+      "user": os.environ.get("PLANSPIEL_USER", ""), "password": os.environ.get("PLANSPIEL_PASSWORD", ""), "from": None}
+PS_WAKE = threading.Event()   # weckt den Abgleich nach einem Login sofort auf
 SYMBOL_RE = re.compile(r"^[A-Za-z0-9.^=-]{1,15}$")
 RANGES = {"1d": "1m", "5d": "5m", "1mo": "30m", "6mo": "1d", "1y": "1d", "5y": "1wk"}
 
@@ -123,28 +125,56 @@ def ps_call(path, body=None, retry=True):
         with urllib.request.urlopen(req, timeout=15) as r:
             return json.load(r)
     except urllib.error.HTTPError as e:
-        if e.code in (401, 403) and retry and PS_USER:
+        if e.code in (401, 403) and retry and PS["user"]:
             PS["token"] = None
             return ps_call(path, body, retry=False)
         raise
 
-def ps_login():
-    if not (PS_USER and PS_PASSWORD):
-        raise RuntimeError("PLANSPIEL_USER/PLANSPIEL_PASSWORD fehlen")
+def ps_login(user=None, password=None):
+    user, password = user or PS["user"], password or PS["password"]
+    if not (user and password):
+        raise PermissionError("Keine Planspiel-Zugangsdaten hinterlegt")
     req = urllib.request.Request(PS_API + "v-ms7/authenticate",
-                                 data=json.dumps({"userName": PS_USER, "password": PS_PASSWORD}).encode(),
+                                 data=json.dumps({"userName": user, "password": password}).encode(),
                                  headers={"Content-Type": "application/json", "Accept": "application/json",
                                           "User-Agent": "Mozilla/5.0", "x-angular-connect-string": PS_XHEADER})
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
             d = json.load(r)
     except urllib.error.HTTPError as e:
-        raise PermissionError(f"Planspiel-Login fehlgeschlagen (HTTP {e.code})")
+        raise PermissionError("Planspiel-Login fehlgeschlagen, Benutzername oder Passwort falsch?"
+                              if e.code in (400, 401, 403, 404) else f"Planspiel-Login fehlgeschlagen (HTTP {e.code})")
     if not d.get("success") or not d.get("result", {}).get("token"):
-        raise PermissionError("Planspiel-Login fehlgeschlagen")
+        raise PermissionError("Planspiel-Login fehlgeschlagen, Benutzername oder Passwort falsch?")
     PS["token"] = d["result"]["token"]["accessToken"]
     if not PS["depot"]:
         PS["depot"] = str(d["result"]["user"]["userPortfolios"][0]["id"])
+
+def ps_connect(user, password):
+    """Login-Knopf: Zugangsdaten pruefen, speichern und den Abgleich starten."""
+    user, password = (user or "").strip(), password or ""
+    if not user or not password or len(user) > 100 or len(password) > 200:
+        raise ValueError("Benutzername und Passwort eingeben")
+    if PS["from"] == "env":
+        raise ValueError("Zugangsdaten sind per Umgebungsvariable fest eingestellt")
+    PS["depot"] = PS_DEPOT
+    ps_login(user, password)   # wirft bei falschen Daten, dann wird nichts gespeichert
+    tmp = PS_FILE.with_suffix(".tmp")
+    tmp.touch(mode=0o600)
+    os.chmod(tmp, 0o600)
+    tmp.write_text(json.dumps({"user": user, "password": password}), encoding="utf-8")
+    tmp.replace(PS_FILE)
+    PS.update(user=user, password=password, **{"from": "file"}, active=True, error=None, trades=None)
+    ps_sync()
+    PS_WAKE.set()
+
+def ps_disconnect():
+    """Abmelden: Zugangsdaten loeschen; das Depot bleibt mit dem letzten Stand und ist wieder bearbeitbar."""
+    if PS["from"] == "env":
+        raise ValueError("Zugangsdaten sind per Umgebungsvariable fest eingestellt")
+    PS_FILE.unlink(missing_ok=True)
+    PS.update(user="", password="", token=None, depot=PS_DEPOT, active=False, error=None, synced=None, info=None,
+              quotes={}, trades=None, **{"from": None})
 
 def ps_symbol(isin, known):
     """Yahoo-Kuerzel zu einer ISIN: vorhandene Zuordnung behalten, sonst wie beim Hinzufuegen suchen."""
@@ -231,10 +261,29 @@ def ps_sync():
 def ps_status():
     if not PS["active"]:
         return None
-    return {"synced": PS["synced"], "error": PS["error"], **(PS["info"] or {})}
+    return {"synced": PS["synced"], "error": PS["error"], "fixed": PS["from"] == "env", **(PS["info"] or {})}
+
+def ps_init():
+    """Beim Start: Zugangsdaten aus Umgebungsvariablen oder gespeicherter Datei; Abgleich-Thread starten."""
+    if PS["user"] and PS["password"]:
+        PS["from"] = "env"
+    elif PS_FILE.exists():
+        try:
+            d = json.loads(PS_FILE.read_text(encoding="utf-8"))
+            PS.update(user=d["user"], password=d["password"], **{"from": "file"})
+        except (OSError, ValueError, KeyError) as e:
+            print("Planspiel-Zugangsdaten nicht lesbar:", e, flush=True)
+    PS["active"] = bool(PS["from"] or PS["token"])
+    threading.Thread(target=ps_loop, daemon=True).start()
+    if PS["active"]:
+        print("Depot wird mit dem Planspiel-Konto abgeglichen", flush=True)
 
 def ps_loop():
     while True:
+        if not PS["active"]:
+            PS_WAKE.wait()
+            PS_WAKE.clear()
+            continue
         try:
             ps_sync()
             wait = PS_INTERVAL
@@ -244,7 +293,8 @@ def ps_loop():
         except Exception as e:
             PS["error"], wait = f"{type(e).__name__}: {e}", PS_INTERVAL * 2
             print("Planspiel-Abgleich:", PS["error"], flush=True)
-        time.sleep(wait)
+        PS_WAKE.wait(wait)
+        PS_WAKE.clear()
 
 # ---------- Depot (Aktienliste + Kaufdaten) ----------
 def _write(depot):
@@ -555,7 +605,7 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
         if u.path not in ("/api/login", "/api/depot", "/api/update", "/api/stock/add", "/api/stock/delete",
-                          "/api/stock/sell"):
+                          "/api/stock/sell", "/api/planspiel/login", "/api/planspiel/logout"):
             return self.send(404, b"not found", "text/plain")
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -579,6 +629,18 @@ class H(BaseHTTPRequestHandler):
                 return self.send(200, json.dumps(update()).encode(), "application/json")
             except Exception as e:
                 return self.send(500, json.dumps({"error": str(e)}).encode(), "application/json")
+        if u.path.startswith("/api/planspiel/"):
+            try:
+                if u.path.endswith("/login"):
+                    ps_connect(body.get("user"), body.get("password"))
+                else:
+                    ps_disconnect()
+            except (ValueError, PermissionError) as e:
+                return self.send(400, json.dumps({"error": str(e)}).encode(), "application/json")
+            except Exception as e:   # Planspiel nicht erreichbar o.ae.
+                return self.send(502, json.dumps({"error": f"Planspiel nicht erreichbar: {e}"}).encode(),
+                                 "application/json")
+            return self.send(200, json.dumps({"planspiel": ps_status()}).encode(), "application/json")
         if PS["active"]:
             return self.send(409, json.dumps({"error": "Depot ist mit dem Planspiel-Konto verknuepft"}).encode(),
                              "application/json")
@@ -600,11 +662,10 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     import threading, webbrowser
+    # die Ansicht "Alle" fragt mit allen Kacheln gleichzeitig ab; Standard-Warteschlange (5) wuerde Verbindungen ablehnen
+    ThreadingHTTPServer.request_queue_size = 256
     srv = ThreadingHTTPServer((HOST, PORT), H)
-    if (PS_USER and PS_PASSWORD) or PS["token"]:
-        PS["active"] = True
-        threading.Thread(target=ps_loop, daemon=True).start()
-        print("Depot wird mit dem Planspiel-Konto abgeglichen", flush=True)
+    ps_init()
     print(f"Aktien-Tracker laeuft auf http://localhost:{PORT}  (Fenster offen lassen, Strg+C beendet)")
     if not os.environ.get("NO_BROWSER"):
         threading.Timer(1, lambda: webbrowser.open(f"http://localhost:{PORT}")).start()

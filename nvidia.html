@@ -72,7 +72,9 @@
   .addform #aQuery { width: 150px; }
   .addform select { width: auto; }
   .addform b { color: var(--text); }
-  #aMsg.err { color: var(--down); }
+  #aMsg.err, #psMsg.err { color: var(--down); }
+  .addform .hint { flex-basis: 100%; font-size: 12px; }
+  .addform #psUser { width: 180px; } .addform #psPw { width: 160px; }
   .tabs button { background: var(--card); color: var(--muted); border: 1px solid var(--line); border-radius: 8px;
                  padding: 8px 14px; cursor: pointer; font: inherit; font-weight: 600; }
   .tabs button.on { background: var(--accent); color: #000; border-color: var(--accent); }
@@ -183,7 +185,7 @@
       <h1 id="name">–</h1>
       <div class="sub" id="sub"></div>
     </div>
-    <div class="status"><div class="dot" id="dot"></div><span id="status">verbinde…</span><button class="upd" id="dEdit" type="button" hidden>🔒 Bearbeiten</button><button class="upd" id="upd" type="button" hidden>⟳ Update</button></div>
+    <div class="status"><div class="dot" id="dot"></div><span id="status">verbinde…</span><button class="upd" id="psBtn" type="button" hidden>🔗 Planspiel-Login</button><button class="upd" id="dEdit" type="button" hidden>🔒 Bearbeiten</button><button class="upd" id="upd" type="button" hidden>⟳ Update</button></div>
   </header>
 
   <div class="addform card" id="addCard" hidden>
@@ -199,6 +201,20 @@
     <span id="aMsg"></span>
     <span id="aLimit" style="flex-basis:100%"></span>
   </div>
+
+  <form class="addform card" id="psCard" hidden>
+    <b>Planspiel-Börse-Konto:</b>
+    <span id="psState"></span>
+    <input id="psUser" placeholder="Benutzername" autocomplete="username" maxlength="100">
+    <input id="psPw" type="password" placeholder="Passwort" autocomplete="current-password" maxlength="200">
+    <button class="upd" id="psOk" type="submit">Verbinden</button>
+    <button class="upd" id="psOut" type="button">Abmelden</button>
+    <button class="upd" id="psCancel" type="button">Schließen</button>
+    <span id="psMsg"></span>
+    <span class="hint" id="psHint">Der Server loggt sich damit bei trading.planspiel-boerse.de ein und übernimmt Positionen,
+      Kurse und Buchungen alle 30 Sekunden. Die Zugangsdaten bleiben auf dem Server und werden nie wieder angezeigt.
+      Solange das Konto verknüpft ist, lässt sich das Depot hier nicht von Hand bearbeiten.</span>
+  </form>
 
   <div class="total card" id="total"></div>
 
@@ -306,6 +322,9 @@ const editing = () => !PLANSPIEL && (!PROTECTED || editPw !== null);
 function lockInputs() {
   [...DEPOT_IDS, 'dGreen'].forEach(id => $(id).disabled = !editing());
   $('dEdit').hidden = !PROTECTED || !!PLANSPIEL;
+  $('psBtn').hidden = EMBED;
+  $('psBtn').textContent = PLANSPIEL ? '🔗 Planspiel' : '🔗 Planspiel-Login';
+  $('psBtn').classList.toggle('on', !!PLANSPIEL);
   $('dEdit').classList.toggle('on', editPw !== null);
   $('dEdit').textContent = editPw !== null ? 'Fertig' : '🔒 Bearbeiten';
   $('dDel').hidden = !editing();
@@ -320,7 +339,11 @@ function applyStocks(j) {
   STOCKS = j.stocks; SYMS = Object.keys(STOCKS);
   if (j.start_capital != null) START_CAPITAL = j.start_capital;
   if (j.realized) REALIZED = j.realized;
-  if ('planspiel' in j) { PLANSPIEL = j.planspiel; if (PLANSPIEL) editPw = null; }
+  if ('planspiel' in j) {
+    PLANSPIEL = j.planspiel;
+    if (PLANSPIEL) editPw = null;
+    if (!$('psCard').hidden && !$('psUser').matches(':focus') && !$('psPw').matches(':focus')) showPsCard();
+  }
   if (!STOCKS[sym]) { sym = SYMS[0] || ''; lastPrice = null; }
   if (changed) { buildTabs(); $('split').innerHTML = ''; showSym(); }
   return changed;
@@ -343,16 +366,65 @@ async function loadDepot() {
 }
 const api = (path, body) => fetch(path, { method: 'POST', body: JSON.stringify(body),
   headers: { 'Content-Type': 'application/json', 'X-Password': editPw ?? '' } });
-$('dEdit').addEventListener('click', async () => {
-  if (editPw !== null) { editPw = null; lockInputs(); return; }
-  // Eingabefelder gibt es nur in der Einzelansicht
-  if (view === 'split') document.querySelector(`#tabs button[data-s="${CSS.escape(sym)}"]`)?.click();
-  const pw = prompt('Passwort zum Bearbeiten:');
-  if (pw === null) return;
+// Bearbeiten-Passwort abfragen und prüfen (true = darf ändern)
+async function askPw(text = 'Passwort zum Bearbeiten:') {
+  if (!PROTECTED || editPw !== null) return true;
+  const pw = prompt(text);
+  if (pw === null) return false;
   editPw = pw.trim();
   const r = await api('/api/login', {});
   if (!r.ok) { editPw = null; alert('Passwort falsch.'); }
   lockInputs();
+  return editPw !== null;
+}
+$('dEdit').addEventListener('click', async () => {
+  if (editPw !== null) { editPw = null; lockInputs(); return; }
+  // Eingabefelder gibt es nur in der Einzelansicht
+  if (view === 'split') document.querySelector(`#tabs button[data-s="${CSS.escape(sym)}"]`)?.click();
+  await askPw();
+});
+
+// ---------- Planspiel-Konto verknüpfen ----------
+function psMsg(t, err) { $('psMsg').textContent = t; $('psMsg').className = err ? 'err' : ''; }
+function showPsCard() {
+  const on = !!PLANSPIEL;
+  ['psUser', 'psPw', 'psOk', 'psHint'].forEach(id => $(id).hidden = on);
+  $('psOut').hidden = !on || PLANSPIEL.fixed;
+  $('psState').textContent = !on ? '' : PLANSPIEL.error ? `verknüpft, Abgleich gestört: ${PLANSPIEL.error}`
+    : `verknüpft (${PLANSPIEL.depot || 'Depot'}), letzter Abgleich ${PLANSPIEL.synced ? new Date(PLANSPIEL.synced).toLocaleTimeString('de-DE') : '–'}`
+      + (PLANSPIEL.fixed ? ' · Zugangsdaten per Umgebungsvariable' : '');
+  $('psCard').hidden = false;
+}
+$('psBtn').addEventListener('click', () => {
+  if (!$('psCard').hidden) { $('psCard').hidden = true; return; }
+  psMsg(''); showPsCard();
+  if (!PLANSPIEL) $('psUser').focus();
+});
+$('psCancel').addEventListener('click', () => { $('psCard').hidden = true; $('psPw').value = ''; psMsg(''); });
+$('psCard').addEventListener('submit', async e => {
+  e.preventDefault();
+  const user = $('psUser').value.trim(), password = $('psPw').value;
+  if (!user || !password) return psMsg('Benutzername und Passwort eingeben', true);
+  if (!await askPw('Passwort des Trackers (Bearbeiten), um das Planspiel-Konto zu verknüpfen:')) return;
+  $('psOk').disabled = true; psMsg('verbinde …');
+  const r = await api('/api/planspiel/login', { user, password }).catch(() => null);
+  const j = r ? await r.json().catch(() => ({})) : {};
+  $('psOk').disabled = false;
+  if (r?.status === 401) { editPw = null; lockInputs(); return psMsg('Tracker-Passwort falsch', true); }
+  if (!r?.ok) return psMsg(j.error || 'Verbinden fehlgeschlagen', true);
+  $('psPw').value = ''; psMsg('verbunden');
+  PLANSPIEL = j.planspiel; showPsCard();
+  await loadDepot(); load();
+});
+$('psOut').addEventListener('click', async () => {
+  if (!confirm('Planspiel-Konto trennen? Die Zugangsdaten werden vom Server gelöscht, das Depot bleibt mit dem letzten Stand.')) return;
+  if (!await askPw()) return;
+  const r = await api('/api/planspiel/logout', {}).catch(() => null);
+  const j = r ? await r.json().catch(() => ({})) : {};
+  if (r?.status === 401) { editPw = null; lockInputs(); return psMsg('Tracker-Passwort falsch', true); }
+  if (!r?.ok) return psMsg(j.error || 'Abmelden fehlgeschlagen', true);
+  PLANSPIEL = null; psMsg('getrennt'); showPsCard();
+  await loadDepot(); load();
 });
 let saveTimer = null;
 function saveDepot(s) {

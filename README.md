@@ -30,14 +30,23 @@ Der Server liest diese Umgebungsvariablen:
 | `DEPOT_FILE`    | `depot.json` daneben  | wo die Depotwerte gespeichert werden                   |
 | `ALLOW_UPDATE`  | leer                  | gesetzt = Update-Knopf aktiv (braucht `EDIT_PASSWORD`) |
 | `UPDATE_BRANCH` | `main`                | Branch, den der Update-Knopf holt                      |
-| `PLANSPIEL_USER` / `PLANSPIEL_PASSWORD` | leer | Login des Planspiel-Börse-Kontos; gesetzt = Depot wird automatisch abgeglichen |
+| `PLANSPIEL_USER` / `PLANSPIEL_PASSWORD` | leer | Login des Planspiel-Börse-Kontos fest vorgeben (sonst über den Knopf **🔗 Planspiel-Login**) |
+| `PLANSPIEL_FILE` | `planspiel.json` neben `DEPOT_FILE` | wo die per Knopf eingegebenen Zugangsdaten liegen (Rechte 600) |
 | `PLANSPIEL_DEPOT` | erstes Depot        | Depot-ID im Planspiel (sonst das Wettbewerbsdepot)     |
 | `PLANSPIEL_INTERVAL` | `30`             | Sekunden zwischen zwei Abfragen beim Planspiel         |
 
 ### Mit dem Planspiel-Konto verknüpfen
 
-Sind `PLANSPIEL_USER` und `PLANSPIEL_PASSWORD` gesetzt (z.B. in
-`/etc/aktien-tracker.env`, Rechte 600), loggt sich der Server bei
+Oben rechts auf **🔗 Planspiel-Login** klicken, Benutzername und Passwort des
+Planspiel-Kontos eingeben, **Verbinden**. Ist `EDIT_PASSWORD` gesetzt, fragt die
+Seite vorher das Tracker-Passwort ab, damit nicht jeder Besucher ein Konto
+verknüpfen kann. Der Server prüft die Daten direkt beim Planspiel und speichert
+sie nur bei Erfolg in `PLANSPIEL_FILE` (nur für den Dienst lesbar, nie zurück an
+den Browser). **Abmelden** im selben Fenster löscht die Datei wieder.
+Alternativ lassen sich die Zugangsdaten fest über `PLANSPIEL_USER` und
+`PLANSPIEL_PASSWORD` vorgeben (z.B. in `/etc/aktien-tracker.env`).
+
+Solange ein Konto verknüpft ist, loggt sich der Server bei
 trading.planspiel-boerse.de ein und übernimmt alle 30 Sekunden:
 
 - Positionen, Kaufkurse, Kaufzeiten und Gebühren aus den Buchungen
