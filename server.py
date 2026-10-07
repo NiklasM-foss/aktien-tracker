@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Kleiner Proxy fuer Yahoo-Finance-Kurse (Browser darf Yahoo wegen CORS nicht direkt abfragen)."""
-import copy, hmac, json, os, re, subprocess, threading, time, urllib.request, urllib.parse
+import copy, hmac, json, os, re, subprocess, threading, time, urllib.error, urllib.request, urllib.parse
 from datetime import date, datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
@@ -17,7 +17,7 @@ CACHE = {}  # url -> (zeit, daten)
 DEPOT_FILE = Path(os.environ.get("DEPOT_FILE", HERE / "depot.json"))
 DEPOT_LOCK = threading.Lock()
 DEPOT_FIELDS = {"dQty", "dCost", "dCur", "dFeeBuy", "dFeeSell"}
-EDIT_FIELDS = DEPOT_FIELDS | {"short"}
+EDIT_FIELDS = DEPOT_FIELDS | {"short", "green"}   # green = "1": nachhaltig (* bzw. ** im Planspiel)
 ISIN_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")
 MAX_STOCKS = 30
 START_CAPITAL = 50000   # fiktives Startgeld in Euro
@@ -36,6 +36,17 @@ DEFAULT_STOCKS = {
                "bought": "2026-10-02T11:38:13",
                "dQty": "30", "dCost": "4374.60", "dCur": "EUR", "dFeeBuy": "15", "dFeeSell": "0"},
 }
+# Planspiel-Konto (optional): Depot, Kurse und Buchungen automatisch aus dem Wettbewerbsdepot uebernehmen
+# Zugangsdaten per Umgebungsvariable oder ueber den Login-Knopf (dann in PLANSPIEL_FILE, nur fuer den Dienst lesbar)
+PS_FILE = Path(os.environ.get("PLANSPIEL_FILE", DEPOT_FILE.with_name("planspiel.json")))
+PS_DEPOT = os.environ.get("PLANSPIEL_DEPOT", "")   # Depot-ID; leer = erstes Depot des Kontos (Wettbewerbsdepot)
+PS_INTERVAL = int(os.environ.get("PLANSPIEL_INTERVAL", 30))   # Sekunden zwischen zwei Abfragen
+PS_API = "https://trading.planspiel-boerse.de/stockcontest/services/api/"
+PS_XHEADER = os.environ.get("PLANSPIEL_XHEADER", "3abab342352e088ab2edde2c495acabd")   # fester Wert aus der Web-App
+PS = {"token": os.environ.get("PLANSPIEL_TOKEN") or None, "depot": PS_DEPOT, "active": False, "error": None,
+      "synced": None, "info": None, "quotes": {}, "trades": None, "trades_at": 0,
+      "user": os.environ.get("PLANSPIEL_USER", ""), "password": os.environ.get("PLANSPIEL_PASSWORD", ""), "from": None}
+PS_WAKE = threading.Event()   # weckt den Abgleich nach einem Login sofort auf
 SYMBOL_RE = re.compile(r"^[A-Za-z0-9.^=-]{1,15}$")
 RANGES = {"1d": "1m", "5d": "5m", "1mo": "30m", "6mo": "1d", "1y": "1d", "5y": "1wk"}
 
@@ -77,11 +88,17 @@ def movers(count=10):
     return out
 
 def tradegate(isin):
-    """Echtzeit-Kurs in EUR von Tradegate (so rechnet auch die Depot-App)."""
+    """Kurs in EUR zur Depotbewertung: Planspiel-Kurs (Stuttgart), wenn das Konto verknuepft ist, sonst Tradegate."""
+    q = PS["quotes"].get(isin)
+    if q and time.time() - q["at"] < 300:
+        return {k: q[k] for k in ("bid", "ask", "last", "close", "kurs", "source")}
     url = "https://www.tradegatebsx.com/refresh.php?isin=" + urllib.parse.quote(isin)
     d = fetch(url, 3)
     num = lambda v: float(v.replace(".", "").replace(",", ".")) if isinstance(v, str) else v
-    return {k: num(d.get(k)) for k in ("bid", "ask", "last", "close", "high", "low")}
+    t = {k: num(d.get(k)) for k in ("bid", "ask", "last", "close", "high", "low")}
+    t["kurs"] = t["bid"] or t["last"]   # Bewertung zum Geldkurs wie im Planspiel
+    t["source"] = "Tradegate"
+    return t
 
 def eurusd():
     try:
@@ -95,6 +112,189 @@ def search(query):
     quotes = fetch("https://query1.finance.yahoo.com/v1/finance/search?" + q, 300).get("quotes", [])
     quotes = [x for x in quotes if x.get("symbol") and x.get("quoteType") in ("EQUITY", "ETF", "MUTUALFUND")]
     return sorted(quotes, key=lambda x: not x["symbol"].endswith(".DE"))
+
+# ---------- Planspiel-Konto ----------
+def ps_call(path, body=None, retry=True):
+    """Aufruf der Planspiel-API mit Bearer-Token; bei abgelaufenem Token einmal neu einloggen."""
+    if not PS["token"]:
+        ps_login()
+    req = urllib.request.Request(PS_API + path, data=None if body is None else json.dumps(body).encode(), headers={
+        "Content-Type": "application/json", "Accept": "application/json", "User-Agent": "Mozilla/5.0",
+        "x-angular-connect-string": PS_XHEADER, "Authorization": "Bearer " + PS["token"]})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403) and retry and PS["user"]:
+            PS["token"] = None
+            return ps_call(path, body, retry=False)
+        raise
+
+def ps_login(user=None, password=None):
+    user, password = user or PS["user"], password or PS["password"]
+    if not (user and password):
+        raise PermissionError("Keine Planspiel-Zugangsdaten hinterlegt")
+    req = urllib.request.Request(PS_API + "v-ms7/authenticate",
+                                 data=json.dumps({"userName": user, "password": password}).encode(),
+                                 headers={"Content-Type": "application/json", "Accept": "application/json",
+                                          "User-Agent": "Mozilla/5.0", "x-angular-connect-string": PS_XHEADER})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            d = json.load(r)
+    except urllib.error.HTTPError as e:
+        raise PermissionError("Planspiel-Login fehlgeschlagen, Benutzername oder Passwort falsch?"
+                              if e.code in (400, 401, 403, 404) else f"Planspiel-Login fehlgeschlagen (HTTP {e.code})")
+    if not d.get("success") or not d.get("result", {}).get("token"):
+        raise PermissionError("Planspiel-Login fehlgeschlagen, Benutzername oder Passwort falsch?")
+    PS["token"] = d["result"]["token"]["accessToken"]
+    if not PS["depot"]:
+        PS["depot"] = str(d["result"]["user"]["userPortfolios"][0]["id"])
+
+def ps_connect(user, password):
+    """Login-Knopf: Zugangsdaten pruefen, speichern und den Abgleich starten."""
+    user, password = (user or "").strip(), password or ""
+    if not user or not password or len(user) > 100 or len(password) > 200:
+        raise ValueError("Benutzername und Passwort eingeben")
+    if PS["from"] == "env":
+        raise ValueError("Zugangsdaten sind per Umgebungsvariable fest eingestellt")
+    PS["depot"] = PS_DEPOT
+    ps_login(user, password)   # wirft bei falschen Daten, dann wird nichts gespeichert
+    tmp = PS_FILE.with_suffix(".tmp")
+    tmp.touch(mode=0o600)
+    os.chmod(tmp, 0o600)
+    tmp.write_text(json.dumps({"user": user, "password": password}), encoding="utf-8")
+    tmp.replace(PS_FILE)
+    PS.update(user=user, password=password, **{"from": "file"}, active=True, error=None, trades=None)
+    ps_sync()
+    PS_WAKE.set()
+
+def ps_disconnect():
+    """Abmelden: Zugangsdaten loeschen; das Depot bleibt mit dem letzten Stand und ist wieder bearbeitbar."""
+    if PS["from"] == "env":
+        raise ValueError("Zugangsdaten sind per Umgebungsvariable fest eingestellt")
+    PS_FILE.unlink(missing_ok=True)
+    PS.update(user="", password="", token=None, depot=PS_DEPOT, active=False, error=None, synced=None, info=None,
+              quotes={}, trades=None, **{"from": None})
+
+def ps_symbol(isin, known):
+    """Yahoo-Kuerzel zu einer ISIN: vorhandene Zuordnung behalten, sonst wie beim Hinzufuegen suchen."""
+    if isin in known:
+        return known[isin]
+    hits = search(isin)
+    if not hits:
+        raise ValueError(f"Keine Aktie zur ISIN {isin} bei Yahoo gefunden")
+    known[isin] = (hits[0]["symbol"], " ".join((hits[0].get("longname") or hits[0].get("shortname") or "").split())[:60])
+    return known[isin]
+
+def ps_apply(trades):
+    """Depot aus den Planspiel-Buchungen neu aufbauen (gleiche Rechnung wie sell_stock)."""
+    with DEPOT_LOCK:
+        old = load_depot()
+    known = {st["isin"]: (sym, st.get("name")) for sym, st in old["stocks"].items() if st.get("isin")}
+    known.update({x["isin"]: (x["symbol"], x.get("name")) for x in old.get("sales", []) if x.get("isin")})
+    stocks, sales = {}, []
+    for t in sorted(trades, key=lambda t: (t["date"], t["id"])):
+        o, kind, when = t.get("order") or {}, t["transactionType"], t["date"].replace(" ", "T")[:19]
+        ins = o.get("instrument") or {}
+        if kind not in ("BUY", "SELL") or not ins.get("isin"):
+            # Dividende, Ausschuettung, Orderloeschung usw.: nur der Betrag zaehlt fuers verfuegbare Geld
+            sales.append({"type": kind, "name": ins.get("name") or kind, "time": when, "realized_eur": t["amount"],
+                          "basis_eur": 0, "fees_eur": max(0.0, -t["amount"]) if "FEE" in kind else 0})
+            continue
+        isin, qty, px, fee = ins["isin"], o["quantity"], o["executionPrice"], o.get("transactionCosts") or 0.0
+        sym, name = ps_symbol(isin, known)
+        if kind == "BUY":
+            st = stocks.setdefault(isin, {"symbol": sym, "isin": isin, "name": name or ins.get("name"), "bought": when,
+                                          "qty": 0.0, "cost": 0.0, "fee": 0.0})
+            st["qty"] += qty; st["cost"] += qty * px; st["fee"] += fee
+            st["green"] = ins.get("sustainability")
+            continue
+        st = stocks[isin]
+        rest = st["qty"] - qty < 1e-9
+        basis = st["cost"] * qty / st["qty"]
+        buy_fee = st["fee"] if rest else 0.0   # Kaufgebuehr erst mit dem letzten Stueck realisiert
+        sales.append({"symbol": sym, "isin": isin, "name": st["name"], "time": when, "qty": qty, "price": px,
+                      "cur": "EUR", "fee": fee, "basis": round(basis, 4), "buy_fee": round(buy_fee, 4),
+                      "realized_eur": round(qty * px - fee - basis - buy_fee, 4),
+                      "basis_eur": round(basis + buy_fee, 4), "fees_eur": round(fee + buy_fee, 4),
+                      "price_pl_eur": round(qty * px - basis, 4), "green": bool(ins.get("sustainability"))})
+        if rest:
+            del stocks[isin]
+        else:
+            st["qty"] -= qty; st["cost"] -= basis
+    num = lambda v: f"{v:.4f}".rstrip("0").rstrip(".")
+    new = {}
+    for st in stocks.values():
+        prev = old["stocks"].get(st["symbol"], {})
+        new[st["symbol"]] = {**{k: prev[k] for k in ("short",) if k in prev}, "isin": st["isin"], "name": st["name"],
+                             "bought": st["bought"], "dQty": num(st["qty"]), "dCost": num(st["cost"]), "dCur": "EUR",
+                             "dFeeBuy": num(st["fee"]), "dFeeSell": "0", "green": "1" if st["green"] else ""}
+    # bisherige Reihenfolge der Tabs beibehalten, neue hinten anfuegen
+    order = [s for s in old["stocks"] if s in new] + [s for s in new if s not in old["stocks"]]
+    depot = {"version": 2, "start_capital": old["start_capital"],
+             "stocks": {s: new[s] for s in order}, "sales": sales}
+    if depot != old:
+        with DEPOT_LOCK:
+            _write(depot)
+
+def ps_sync():
+    if not PS["depot"]:   # Token aus PLANSPIEL_TOKEN ohne Login: Depot-ID aus dem Benutzerprofil
+        PS["depot"] = str(ps_call("v-ms8/user/getUser")["userPortfolios"][0]["id"])
+    port = ps_call(f"v-ms1/portfolio/getPortfolioWithItems?portfolioId={PS['depot']}&withItems=true")
+    now, p = time.time(), port["portfolio"]
+    for it in port.get("items", []):
+        ins = it["instrument"]
+        if ins.get("isin") and ins.get("bid"):
+            perf = ins.get("performanceAbs")
+            PS["quotes"][ins["isin"]] = {"bid": ins["bid"], "ask": ins.get("ask"), "last": ins["bid"],
+                                         "close": ins["bid"] - perf if perf is not None else None,
+                                         "kurs": ins["bid"], "source": "Planspiel", "at": now}
+    PS["info"] = {"depot": p.get("name"), "cash": p.get("credit"), "value": p.get("value"),
+                  "pl": p.get("performanceAbsTotal"), "pl_pct": p.get("performanceRelTotal"),
+                  "green_pl": p.get("performanceAbsSustainability"), "trades": p.get("numTrades")}
+    # Buchungen nur neu holen, wenn sich die Zahl der Trades geaendert hat (Dividenden spaetestens nach 10 Minuten)
+    if p.get("numTrades") != PS["trades"] or now - PS["trades_at"] > 600:
+        ps_apply(ps_call(f"v-ms1/transaction/getTransactions?portfolioId={PS['depot']}"))
+        PS["trades"], PS["trades_at"] = p.get("numTrades"), now
+    PS["synced"], PS["error"] = datetime.now().isoformat(timespec="seconds"), None
+
+def ps_status():
+    if not PS["active"]:
+        return None
+    return {"synced": PS["synced"], "error": PS["error"], "fixed": PS["from"] == "env", **(PS["info"] or {})}
+
+def ps_init():
+    """Beim Start: Zugangsdaten aus Umgebungsvariablen oder gespeicherter Datei; Abgleich-Thread starten."""
+    if PS["user"] and PS["password"]:
+        PS["from"] = "env"
+    elif PS_FILE.exists():
+        try:
+            d = json.loads(PS_FILE.read_text(encoding="utf-8"))
+            PS.update(user=d["user"], password=d["password"], **{"from": "file"})
+        except (OSError, ValueError, KeyError) as e:
+            print("Planspiel-Zugangsdaten nicht lesbar:", e, flush=True)
+    PS["active"] = bool(PS["from"] or PS["token"])
+    threading.Thread(target=ps_loop, daemon=True).start()
+    if PS["active"]:
+        print("Depot wird mit dem Planspiel-Konto abgeglichen", flush=True)
+
+def ps_loop():
+    while True:
+        if not PS["active"]:
+            PS_WAKE.wait()
+            PS_WAKE.clear()
+            continue
+        try:
+            ps_sync()
+            wait = PS_INTERVAL
+        except PermissionError as e:   # falsches Passwort: selten probieren, damit das Konto nicht gesperrt wird
+            PS["error"], wait = str(e), 900
+            print(e, flush=True)
+        except Exception as e:
+            PS["error"], wait = f"{type(e).__name__}: {e}", PS_INTERVAL * 2
+            print("Planspiel-Abgleich:", PS["error"], flush=True)
+        PS_WAKE.wait(wait)
+        PS_WAKE.clear()
 
 # ---------- Depot (Aktienliste + Kaufdaten) ----------
 def _write(depot):
@@ -126,6 +326,8 @@ def save_depot(symbol, values):
             raise ValueError("ungueltiges Feld " + str(k))
         if k == "dCur" and v not in ("EUR", "USD"):
             raise ValueError("ungueltige Waehrung")
+        if k == "green" and v not in ("", "1"):
+            raise ValueError("ungueltiger Wert fuer nachhaltig")
         clean[k] = v.strip() if k == "short" else v
     with DEPOT_LOCK:
         depot = load_depot()
@@ -175,6 +377,8 @@ def add_stock(query, values):
 def sell_stock(symbol, qty, price, fee, when):
     """Teilverkauf/Verkauf: Position anteilig verkleinern (Durchschnittskosten), Gewinn realisieren.
 
+    Wie im Planspiel bleibt die Kaufgebuehr bei einem Teilverkauf komplett bei der Restposition
+    und wird erst mit dem letzten Stueck realisiert.
     Verfuegbares Geld = Startkapital - Bezahltes der offenen Positionen + realisierter Gewinn,
     deshalb reicht es, je Verkauf den realisierten Gewinn (in Euro) mitzuschreiben.
     """
@@ -194,8 +398,9 @@ def sell_stock(symbol, qty, price, fee, when):
         have = _num(st.get("dQty"))
         if qty > have + 1e-9:
             raise ValueError(f"Nur {have:g} Stueck im Depot")
-        frac = qty / have
-        basis, buy_fee = _num(st.get("dCost")) * frac, _num(st.get("dFeeBuy")) * frac
+        rest = have - qty < 1e-9
+        basis = _num(st.get("dCost")) * qty / have
+        buy_fee = _num(st.get("dFeeBuy")) if rest else 0.0
         realized = qty * price - fee - basis - buy_fee
         fx = 1.0
         if st.get("dCur", "EUR") != "EUR":
@@ -205,26 +410,28 @@ def sell_stock(symbol, qty, price, fee, when):
         eur = lambda v: round(v / fx, 2)
         depot.setdefault("sales", []).append({
             "symbol": symbol, "name": st.get("name"), "time": when, "qty": qty, "price": price,
-            "cur": st.get("dCur", "EUR"), "fee": fee, "basis": round(basis, 2), "buy_fee": round(buy_fee, 2),
+            "cur": st.get("dCur", "EUR"), "fee": fee, "basis": round(basis, 2), "buy_fee": round(buy_fee, 4),
             "realized_eur": eur(realized), "basis_eur": eur(basis + buy_fee), "fees_eur": eur(fee + buy_fee),
+            "price_pl_eur": eur(qty * price - basis), "green": st.get("green") == "1",
         })
-        if have - qty < 1e-9:
+        if rest:
             del depot["stocks"][symbol]   # alles verkauft
         else:
             fmt = lambda v: f"{v:.2f}".rstrip("0").rstrip(".") if v % 1 else f"{v:.0f}"
             st["dQty"] = fmt(have - qty)
             st["dCost"] = f"{_num(st.get('dCost')) - basis:.2f}"
-            st["dFeeBuy"] = f"{_num(st.get('dFeeBuy')) - buy_fee:.2f}"
         _write(depot)
     return depot
 
 def realized_totals(depot):
     sales = depot.get("sales", [])
     return {
-        "pl": round(sum(x["realized_eur"] for x in sales), 2),
-        "basis": round(sum(x["basis_eur"] for x in sales), 2),
-        "fees": round(sum(x["fees_eur"] for x in sales), 2),
-        "count": len(sales),
+        "pl": round(sum(x["realized_eur"] for x in sales), 4),
+        "basis": round(sum(x["basis_eur"] for x in sales), 4),
+        "fees": round(sum(x["fees_eur"] for x in sales), 4),
+        "count": sum(1 for x in sales if x.get("qty")),   # nur Verkaeufe, keine Dividenden o.ae.
+        # Nachhaltigkeitsertrag: Kursgewinne/-verluste verkaufter nachhaltiger Papiere (ohne Gebuehren)
+        "green_pl": round(sum(x.get("price_pl_eur", 0) for x in sales if x.get("green")), 2),
     }
 
 def delete_stock(symbol):
@@ -257,11 +464,11 @@ def position(sym, st, fx):
     if st.get("isin"):
         try:
             t = tradegate(st["isin"])
-            t = t if t.get("last") else None
+            t = t if t.get("kurs") else None
         except Exception:
             t = None
     use_tg = bool(t and cur == "EUR")
-    value = t["last"] * qty if use_tg else conv(px) * qty
+    value = t["kurs"] * qty if use_tg else conv(px) * qty
     try:
         today = datetime.fromisoformat(st.get("bought") or "").date() == date.today()
     except ValueError:
@@ -269,7 +476,7 @@ def position(sym, st, fx):
     if today:
         day = value - cost
     elif use_tg and t.get("close"):
-        day = (t["last"] - t["close"]) * qty
+        day = (t["kurs"] - t["close"]) * qty
     else:
         day = conv(px - prev) * qty if prev else None
     to_eur = lambda v: None if v is None else (v if cur == "EUR" else v / fx)
@@ -279,12 +486,12 @@ def position(sym, st, fx):
     return {
         "symbol": sym, "name": st.get("name"), "short": st.get("short") or sym, "isin": st.get("isin") or None,
         "currency": ccy, "price": regular,
-        "price_eur": t["last"] if t else (px if ccy == "EUR" else (px / fx if fx and ccy == "USD" else None)),
+        "price_eur": t["kurs"] if t else (px if ccy == "EUR" else (px / fx if fx and ccy == "USD" else None)),
         "change_pct": (regular - rprev) / rprev * 100 if regular and rprev else None,
         "qty": qty, "value": to_eur(value), "cost": to_eur(cost), "fees": to_eur(fees),
         "pl": to_eur(pl), "pl_pct": pl / (cost + fees) * 100 if cost + fees else 0.0,
-        "day": to_eur(day), "bought": st.get("bought"), "bought_today": today,
-        "source": "tradegate" if use_tg else "yahoo",
+        "day": to_eur(day), "bought": st.get("bought"), "bought_today": today, "green": st.get("green") == "1",
+        "source": t["source"].lower() if use_tg else "yahoo",
     }
 
 def summary():
@@ -302,20 +509,25 @@ def summary():
     real = realized_totals(depot)
     pl = sum(p["pl"] for p in stocks) + real["pl"]   # offene Positionen plus realisierte Verkaeufe
     cash = depot["start_capital"] - paid + real["pl"]
+    total = cash + value   # Depotgesamtwert; je Wertpapier hoechstens 20 % davon kaufbar
+    green_pl = real["green_pl"] + sum(p["value"] - p["cost"] for p in stocks if p["green"])
+    for p in stocks:
+        p["share_pct"] = p["value"] / total * 100 if total else None
+        p["buy_room"] = max(0.0, total * 0.2 - p["value"])
     invested = paid + real["basis"]
     r2 = lambda v: None if v is None else round(v, 2)
     day = sum(p["day"] for p in stocks if p["day"] is not None)
     for p in stocks:
-        for k in ("value", "cost", "fees", "pl", "pl_pct", "day", "price_eur", "change_pct"):
+        for k in ("value", "cost", "fees", "pl", "pl_pct", "day", "price_eur", "change_pct", "share_pct", "buy_room"):
             p[k] = r2(p[k])
     return {
         "updated": datetime.now().astimezone().isoformat(timespec="seconds"),
         "complete": not errors, "errors": errors, "eurusd": fx,
-        "start_capital": depot["start_capital"], "cash": r2(cash), "value": r2(value), "total": r2(cash + value),
+        "start_capital": depot["start_capital"], "cash": r2(cash), "value": r2(value), "total": r2(total),
         "paid": r2(paid), "fees": r2(fees + real["fees"]), "pl": r2(pl),
         "pl_pct": r2(pl / invested * 100 if invested else 0.0),
         "pl_ex_fees": r2(pl + fees + real["fees"]), "day": r2(day),
-        "realized": real["pl"], "sales": depot.get("sales", []),
+        "realized": real["pl"], "green_pl": r2(green_pl), "sales": depot.get("sales", []), "planspiel": ps_status(),
         "stocks": stocks,
     }
 
@@ -375,7 +587,8 @@ class H(BaseHTTPRequestHandler):
                 d = load_depot()
                 self.send(200, json.dumps({"protected": bool(PASSWORD), "start_capital": d["start_capital"],
                                            "stocks": d["stocks"], "realized": realized_totals(d),
-                                           "sales": d.get("sales", [])}).encode(), "application/json")
+                                           "sales": d.get("sales", []), "planspiel": ps_status()}).encode(),
+                          "application/json")
             elif u.path == "/api/summary":
                 self.send(200, json.dumps(summary()).encode(), "application/json")
             elif u.path == "/api/version":
@@ -392,7 +605,7 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
         if u.path not in ("/api/login", "/api/depot", "/api/update", "/api/stock/add", "/api/stock/delete",
-                          "/api/stock/sell"):
+                          "/api/stock/sell", "/api/planspiel/login", "/api/planspiel/logout"):
             return self.send(404, b"not found", "text/plain")
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -416,6 +629,21 @@ class H(BaseHTTPRequestHandler):
                 return self.send(200, json.dumps(update()).encode(), "application/json")
             except Exception as e:
                 return self.send(500, json.dumps({"error": str(e)}).encode(), "application/json")
+        if u.path.startswith("/api/planspiel/"):
+            try:
+                if u.path.endswith("/login"):
+                    ps_connect(body.get("user"), body.get("password"))
+                else:
+                    ps_disconnect()
+            except (ValueError, PermissionError) as e:
+                return self.send(400, json.dumps({"error": str(e)}).encode(), "application/json")
+            except Exception as e:   # Planspiel nicht erreichbar o.ae.
+                return self.send(502, json.dumps({"error": f"Planspiel nicht erreichbar: {e}"}).encode(),
+                                 "application/json")
+            return self.send(200, json.dumps({"planspiel": ps_status()}).encode(), "application/json")
+        if PS["active"]:
+            return self.send(409, json.dumps({"error": "Depot ist mit dem Planspiel-Konto verknuepft"}).encode(),
+                             "application/json")
         try:
             symbol = body.get("symbol")
             if u.path == "/api/stock/add":
@@ -434,7 +662,10 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     import threading, webbrowser
+    # die Ansicht "Alle" fragt mit allen Kacheln gleichzeitig ab; Standard-Warteschlange (5) wuerde Verbindungen ablehnen
+    ThreadingHTTPServer.request_queue_size = 256
     srv = ThreadingHTTPServer((HOST, PORT), H)
+    ps_init()
     print(f"Aktien-Tracker laeuft auf http://localhost:{PORT}  (Fenster offen lassen, Strg+C beendet)")
     if not os.environ.get("NO_BROWSER"):
         threading.Timer(1, lambda: webbrowser.open(f"http://localhost:{PORT}")).start()

@@ -3,3 +3,5 @@ __pycache__/
 .env
 depot.json
 depot.tmp
+planspiel.json
+planspiel.tmp

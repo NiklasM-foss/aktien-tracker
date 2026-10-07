@@ -59,6 +59,10 @@
   .depot input, .depot select { background: var(--bg); color: var(--text); border: 1px solid var(--line);
                   border-radius: 6px; padding: 4px 8px; font: inherit; width: 100px; }
   .depot select { width: auto; }
+  .depot label { display: inline-flex; gap: 5px; align-items: center; cursor: pointer; }
+  .depot input[type=checkbox] { width: auto; }
+  .warn { color: #d29922; }
+  body.is-row .depot .share { display: none; }
   .depot input:disabled, .depot select:disabled { opacity: .6; }
   .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
   .tabs button.add { border-style: dashed; }
@@ -68,11 +72,13 @@
   .addform #aQuery { width: 150px; }
   .addform select { width: auto; }
   .addform b { color: var(--text); }
-  #aMsg.err { color: var(--down); }
+  #aMsg.err, #psMsg.err { color: var(--down); }
+  .addform .hint { flex-basis: 100%; font-size: 12px; }
+  .addform #psUser { width: 180px; } .addform #psPw { width: 160px; }
   .tabs button { background: var(--card); color: var(--muted); border: 1px solid var(--line); border-radius: 8px;
                  padding: 8px 14px; cursor: pointer; font: inherit; font-weight: 600; }
   .tabs button.on { background: var(--accent); color: #000; border-color: var(--accent); }
-  .total { margin: 18px 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+  .total { margin: 18px 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
   .total .k { color: var(--muted); font-size: 12px; }
   .total .v { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .split { display: none; grid-template-columns: 1fr; gap: 10px; margin-top: 12px; }
@@ -179,7 +185,7 @@
       <h1 id="name">–</h1>
       <div class="sub" id="sub"></div>
     </div>
-    <div class="status"><div class="dot" id="dot"></div><span id="status">verbinde…</span><button class="upd" id="dEdit" type="button" hidden>🔒 Bearbeiten</button><button class="upd" id="upd" type="button" hidden>⟳ Update</button></div>
+    <div class="status"><div class="dot" id="dot"></div><span id="status">verbinde…</span><button class="upd" id="psBtn" type="button" hidden>🔗 Planspiel-Login</button><button class="upd" id="dEdit" type="button" hidden>🔒 Bearbeiten</button><button class="upd" id="upd" type="button" hidden>⟳ Update</button></div>
   </header>
 
   <div class="addform card" id="addCard" hidden>
@@ -188,11 +194,27 @@
     <input id="aQty" type="number" step="1" placeholder="Stück"> für insgesamt
     <input id="aCost" type="number" step="0.01" placeholder="Preis">
     <select id="aCur"><option value="EUR">€</option><option value="USD">$</option></select>
-    · Kaufgebühr <input id="aFee" type="number" step="0.01" placeholder="0" title="Vorschlag: 0,3 %, mindestens 15 €">
+    · Kaufgebühr <input id="aFee" type="number" step="any" placeholder="0" title="Vorschlag: 0,3 %, mindestens 15 €">
+    <label><input id="aGreen" type="checkbox" style="width:auto"> nachhaltig (*/**)</label>
     <button class="upd" id="aAdd" type="button">Hinzufügen</button>
     <button class="upd" id="aCancel" type="button">Abbrechen</button>
     <span id="aMsg"></span>
+    <span id="aLimit" style="flex-basis:100%"></span>
   </div>
+
+  <form class="addform card" id="psCard" hidden>
+    <b>Planspiel-Börse-Konto:</b>
+    <span id="psState"></span>
+    <input id="psUser" placeholder="Benutzername" autocomplete="username" maxlength="100">
+    <input id="psPw" type="password" placeholder="Passwort" autocomplete="current-password" maxlength="200">
+    <button class="upd" id="psOk" type="submit">Verbinden</button>
+    <button class="upd" id="psOut" type="button">Abmelden</button>
+    <button class="upd" id="psCancel" type="button">Schließen</button>
+    <span id="psMsg"></span>
+    <span class="hint" id="psHint">Der Server loggt sich damit bei trading.planspiel-boerse.de ein und übernimmt Positionen,
+      Kurse und Buchungen alle 30 Sekunden. Die Zugangsdaten bleiben auf dem Server und werden nie wieder angezeigt.
+      Solange das Konto verknüpft ist, lässt sich das Depot hier nicht von Hand bearbeiten.</span>
+  </form>
 
   <div class="total card" id="total"></div>
 
@@ -210,12 +232,15 @@
     <div><div class="k" id="dPLk">Gewinn / Verlust</div><div class="v big" id="dPL">–</div></div>
     <div><div class="k" id="dDayK">Heute</div><div class="v" id="dDay">–</div></div>
     <div><div class="k">Einstand pro Aktie</div><div class="v" id="dAvg">–</div></div>
+    <div class="share" title="Planspiel-Regel: Bestand plus Kauf höchstens 20 % des Depotgesamtwerts">
+      <div class="k" id="dShareK">Anteil am Depot</div><div class="v" id="dShare">–</div></div>
     <div class="setup">
       <input id="dQty" type="number" step="1"> Stück für insgesamt
       <input id="dCost" type="number" step="0.01">
       <select id="dCur"><option value="EUR">€</option><option value="USD">$</option></select>
-      gekauft · Gebühren: Kauf <input id="dFeeBuy" type="number" step="0.01">
-      + Verkauf <input id="dFeeSell" type="number" step="0.01">
+      gekauft · Gebühren: Kauf <input id="dFeeBuy" type="number" step="any">
+      + Verkauf <input id="dFeeSell" type="number" step="any">
+      · <label title="Im Planspiel mit * oder ** markiert, zählt für die Nachhaltigkeitswertung"><input id="dGreen" type="checkbox"> nachhaltig</label>
       <span id="dSave"></span>
       <button class="upd" id="dSell" type="button" hidden style="margin-left:auto">Verkauf</button>
       <button class="upd" id="dDel" type="button" hidden>Aktie entfernen</button>
@@ -224,7 +249,7 @@
       <b style="color:var(--text)">Verkauf:</b>
       <input id="sQty" type="number" step="1" placeholder="Stück"> Stück zu
       <input id="sPrice" type="number" step="0.01" placeholder="Kurs"> je Aktie · Gebühr
-      <input id="sFee" type="number" step="0.01" title="Vorschlag: 0,3 %, mindestens 15 €">
+      <input id="sFee" type="number" step="any" title="Vorschlag: 0,3 %, mindestens 15 €">
       am <input id="sTime" type="datetime-local" step="1" style="width:auto">
       <button class="upd" id="sOk" type="button">Verkaufen</button>
       <button class="upd" id="sCancel" type="button">Abbrechen</button>
@@ -275,7 +300,7 @@ const store = { get: k => { try { return localStorage.getItem(k); } catch { retu
 // Aktienliste und Kaufdaten liegen auf dem Server (dCost = Gesamtpreis ohne Gebühren)
 let STOCKS = {}, SYMS = [];
 let START_CAPITAL = 50000;   // fiktives Startgeld in €, kommt vom Server
-let REALIZED = { pl: 0, basis: 0, fees: 0, count: 0 };   // abgeschlossene Verkäufe in €
+let REALIZED = { pl: 0, basis: 0, fees: 0, count: 0, green_pl: 0 };   // abgeschlossene Verkäufe in €
 const SURGE_PCT = 0.5, SURGE_MIN = 5;   // grün aufleuchten ab +0,5 % in 5 Minuten
 // Ansicht: ?embed=1&sym=X (Kachel im Split), sonst Split oder Einzelaktie (gemerkt)
 const qs = new URLSearchParams(location.search);
@@ -290,12 +315,16 @@ const tg = {};     // sym -> Tradegate-Kurs in EUR (Depotbewertung wie in der Ap
 const key = (s, id) => s.toLowerCase() + '-' + id;
 // ändern nur mit Passwort
 let PROTECTED = true, editPw = null;
+let PLANSPIEL = null;   // verknüpftes Planspiel-Konto: Depot kommt automatisch, Bearbeiten aus
 const DEPOT_IDS = ['dQty', 'dCost', 'dCur', 'dFeeBuy', 'dFeeSell'];
 const setting = (s, id) => STOCKS[s]?.[id] ?? '';
-const editing = () => !PROTECTED || editPw !== null;
+const editing = () => !PLANSPIEL && (!PROTECTED || editPw !== null);
 function lockInputs() {
-  DEPOT_IDS.forEach(id => $(id).disabled = !editing());
-  $('dEdit').hidden = !PROTECTED;
+  [...DEPOT_IDS, 'dGreen'].forEach(id => $(id).disabled = !editing());
+  $('dEdit').hidden = !PROTECTED || !!PLANSPIEL;
+  $('psBtn').hidden = EMBED;
+  $('psBtn').textContent = PLANSPIEL ? '🔗 Planspiel' : '🔗 Planspiel-Login';
+  $('psBtn').classList.toggle('on', !!PLANSPIEL);
   $('dEdit').classList.toggle('on', editPw !== null);
   $('dEdit').textContent = editPw !== null ? 'Fertig' : '🔒 Bearbeiten';
   $('dDel').hidden = !editing();
@@ -310,6 +339,11 @@ function applyStocks(j) {
   STOCKS = j.stocks; SYMS = Object.keys(STOCKS);
   if (j.start_capital != null) START_CAPITAL = j.start_capital;
   if (j.realized) REALIZED = j.realized;
+  if ('planspiel' in j) {
+    PLANSPIEL = j.planspiel;
+    if (PLANSPIEL) editPw = null;
+    if (!$('psCard').hidden && !$('psUser').matches(':focus') && !$('psPw').matches(':focus')) showPsCard();
+  }
   if (!STOCKS[sym]) { sym = SYMS[0] || ''; lastPrice = null; }
   if (changed) { buildTabs(); $('split').innerHTML = ''; showSym(); }
   return changed;
@@ -324,22 +358,73 @@ async function loadDepot() {
   } catch { return; }
   lockInputs();
   // Felder nur nachziehen, wenn gerade niemand darin tippt
-  if (view !== 'split' && STOCKS[sym] && !DEPOT_IDS.includes(document.activeElement?.id) && !saveTimer)
+  if (view !== 'split' && STOCKS[sym] && !DEPOT_IDS.includes(document.activeElement?.id) && !saveTimer) {
     DEPOT_IDS.forEach(id => $(id).value = setting(sym, id));
+    $('dGreen').checked = STOCKS[sym].green === '1';
+  }
   if (live[sym]) { renderDepot(); renderTotal(); }
 }
 const api = (path, body) => fetch(path, { method: 'POST', body: JSON.stringify(body),
   headers: { 'Content-Type': 'application/json', 'X-Password': editPw ?? '' } });
-$('dEdit').addEventListener('click', async () => {
-  if (editPw !== null) { editPw = null; lockInputs(); return; }
-  // Eingabefelder gibt es nur in der Einzelansicht
-  if (view === 'split') document.querySelector(`#tabs button[data-s="${CSS.escape(sym)}"]`)?.click();
-  const pw = prompt('Passwort zum Bearbeiten:');
-  if (pw === null) return;
+// Bearbeiten-Passwort abfragen und prüfen (true = darf ändern)
+async function askPw(text = 'Passwort zum Bearbeiten:') {
+  if (!PROTECTED || editPw !== null) return true;
+  const pw = prompt(text);
+  if (pw === null) return false;
   editPw = pw.trim();
   const r = await api('/api/login', {});
   if (!r.ok) { editPw = null; alert('Passwort falsch.'); }
   lockInputs();
+  return editPw !== null;
+}
+$('dEdit').addEventListener('click', async () => {
+  if (editPw !== null) { editPw = null; lockInputs(); return; }
+  // Eingabefelder gibt es nur in der Einzelansicht
+  if (view === 'split') document.querySelector(`#tabs button[data-s="${CSS.escape(sym)}"]`)?.click();
+  await askPw();
+});
+
+// ---------- Planspiel-Konto verknüpfen ----------
+function psMsg(t, err) { $('psMsg').textContent = t; $('psMsg').className = err ? 'err' : ''; }
+function showPsCard() {
+  const on = !!PLANSPIEL;
+  ['psUser', 'psPw', 'psOk', 'psHint'].forEach(id => $(id).hidden = on);
+  $('psOut').hidden = !on || PLANSPIEL.fixed;
+  $('psState').textContent = !on ? '' : PLANSPIEL.error ? `verknüpft, Abgleich gestört: ${PLANSPIEL.error}`
+    : `verknüpft (${PLANSPIEL.depot || 'Depot'}), letzter Abgleich ${PLANSPIEL.synced ? new Date(PLANSPIEL.synced).toLocaleTimeString('de-DE') : '–'}`
+      + (PLANSPIEL.fixed ? ' · Zugangsdaten per Umgebungsvariable' : '');
+  $('psCard').hidden = false;
+}
+$('psBtn').addEventListener('click', () => {
+  if (!$('psCard').hidden) { $('psCard').hidden = true; return; }
+  psMsg(''); showPsCard();
+  if (!PLANSPIEL) $('psUser').focus();
+});
+$('psCancel').addEventListener('click', () => { $('psCard').hidden = true; $('psPw').value = ''; psMsg(''); });
+$('psCard').addEventListener('submit', async e => {
+  e.preventDefault();
+  const user = $('psUser').value.trim(), password = $('psPw').value;
+  if (!user || !password) return psMsg('Benutzername und Passwort eingeben', true);
+  if (!await askPw('Passwort des Trackers (Bearbeiten), um das Planspiel-Konto zu verknüpfen:')) return;
+  $('psOk').disabled = true; psMsg('verbinde …');
+  const r = await api('/api/planspiel/login', { user, password }).catch(() => null);
+  const j = r ? await r.json().catch(() => ({})) : {};
+  $('psOk').disabled = false;
+  if (r?.status === 401) { editPw = null; lockInputs(); return psMsg('Tracker-Passwort falsch', true); }
+  if (!r?.ok) return psMsg(j.error || 'Verbinden fehlgeschlagen', true);
+  $('psPw').value = ''; psMsg('verbunden');
+  PLANSPIEL = j.planspiel; showPsCard();
+  await loadDepot(); load();
+});
+$('psOut').addEventListener('click', async () => {
+  if (!confirm('Planspiel-Konto trennen? Die Zugangsdaten werden vom Server gelöscht, das Depot bleibt mit dem letzten Stand.')) return;
+  if (!await askPw()) return;
+  const r = await api('/api/planspiel/logout', {}).catch(() => null);
+  const j = r ? await r.json().catch(() => ({})) : {};
+  if (r?.status === 401) { editPw = null; lockInputs(); return psMsg('Tracker-Passwort falsch', true); }
+  if (!r?.ok) return psMsg(j.error || 'Abmelden fehlgeschlagen', true);
+  PLANSPIEL = null; psMsg('getrennt'); showPsCard();
+  await loadDepot(); load();
 });
 let saveTimer = null;
 function saveDepot(s) {
@@ -347,6 +432,7 @@ function saveDepot(s) {
   $('dSave').textContent = '…';
   saveTimer = setTimeout(async () => {
     const values = Object.fromEntries(DEPOT_IDS.map(id => [id, String(setting(s, id))]));
+    values.green = STOCKS[s]?.green === '1' ? '1' : '';
     const r = await api('/api/depot', { symbol: s, values }).catch(() => null);
     saveTimer = null;
     if (r?.ok) { applyStocks(await r.json()); $('dSave').textContent = 'gespeichert'; }
@@ -364,7 +450,7 @@ function buildTabs() {
 }
 $('tabs').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
-  if (b.dataset.s === 'ADD') { $('addCard').hidden = false; $('aQuery').focus(); return; }
+  if (b.dataset.s === 'ADD') { $('addCard').hidden = false; updateAddLimit(); $('aQuery').focus(); return; }
   if (b.dataset.s === 'ALL') view = 'split';
   else { view = 'single'; sym = b.dataset.s; store.set('tracker-sym', sym); lastPrice = null; }
   store.set('tracker-view', view); showSym(); load();
@@ -381,6 +467,7 @@ function showSym() {
   $('name').textContent = `${STOCKS[sym].name} (${sym})`;
 
   ['dQty', 'dCost', 'dCur', 'dFeeBuy', 'dFeeSell'].forEach(id => $(id).value = setting(sym, id));
+  $('dGreen').checked = STOCKS[sym].green === '1';
   ['aHi', 'aLo'].forEach(id => $(id).value = store.get(key(sym, id)) || '');
 }
 
@@ -399,7 +486,7 @@ async function load() {
     SYMS.forEach((s, i) => live[s] = all[i]);
     await Promise.all(SYMS.map(async s => {
       if (!STOCKS[s]?.isin) return;
-      try { const j = await (await fetch('/api/tg?isin=' + STOCKS[s].isin, { cache: 'no-store' })).json(); if (j.last) tg[s] = j; }
+      try { const j = await (await fetch('/api/tg?isin=' + STOCKS[s].isin, { cache: 'no-store' })).json(); if (j.kurs) tg[s] = j; }
       catch {}
     }));
     data = cur || live[sym];
@@ -408,7 +495,10 @@ async function load() {
     showSurge();
     renderTotal();
     $('dot').className = 'dot live';
-    $('status').textContent = 'live · ' + new Date().toLocaleTimeString('de-DE');
+    $('status').textContent = 'live · ' + new Date().toLocaleTimeString('de-DE') + (PLANSPIEL ? ' · 🔗 Planspiel' : '');
+    $('status').title = !PLANSPIEL ? '' : PLANSPIEL.error ? 'Abgleich mit dem Planspiel-Konto gestört: ' + PLANSPIEL.error
+      : `Depot mit dem Planspiel-Konto verknüpft, letzter Abgleich ${PLANSPIEL.synced ? new Date(PLANSPIEL.synced).toLocaleTimeString('de-DE') : '–'}`;
+    if (PLANSPIEL?.error) $('dot').className = 'dot err';
   } catch (e) {
     $('dot').className = 'dot err';
     $('status').textContent = 'Fehler – Server läuft?';
@@ -597,6 +687,12 @@ $('ranges').addEventListener('click', e => {
     if (live[sym]) { renderDepot(); renderTotal(); }
   });
 });
+$('dGreen').addEventListener('change', () => {
+  if (!editing() || !STOCKS[sym]) return;
+  STOCKS[sym].green = $('dGreen').checked ? '1' : '';
+  saveDepot(sym);
+  renderTotal();
+});
 // Position einer Aktie, Beträge in ihrer Depotwährung (cur)
 function position(s) {
   const d = live[s]; if (!d) return null;
@@ -607,13 +703,13 @@ function position(s) {
   const pts = d.points, px = pts.length ? pts[pts.length - 1][1] : d.meta.regularMarketPrice;
   const prev = d.meta.previousClose ?? d.meta.chartPreviousClose;
   const qty = n('dQty'), cost = n('dCost'), fees = n('dFeeBuy') + n('dFeeSell');
-  // Bewertung mit Tradegate-Kurs (EUR), sonst Yahoo-Kurs umgerechnet
+  // Bewertung mit Tradegate-Geldkurs (EUR, wie im Planspiel), sonst Yahoo-Kurs umgerechnet
   const t = tg[s];
-  const value = t && cur === 'EUR' ? t.last * qty : conv(px) * qty;
+  const value = t && cur === 'EUR' ? t.kurs * qty : conv(px) * qty;
   // heute gekauft: „Heute“ = Entwicklung seit Kauf, sonst seit gestrigem Schluss
   const b = STOCKS[s]?.bought ? new Date(STOCKS[s].bought) : null;
   const today = b && b.toDateString() === new Date().toDateString();
-  const day = today ? value - cost : t && cur === 'EUR' && t.close ? (t.last - t.close) * qty : prev ? conv(px - prev) * qty : null;
+  const day = today ? value - cost : t && cur === 'EUR' && t.close ? (t.kurs - t.close) * qty : prev ? conv(px - prev) * qty : null;
   return { cur, fx, qty, cost, fees, value, pl: value - cost - fees, day, today };
 }
 const signed = (v, fmt) => (v >= 0 ? '+' : '') + fmt(v);
@@ -629,27 +725,45 @@ function renderDepot() {
     $('dDay').textContent = signed(p.day, fmt);
   }
   $('dAvg').textContent = p.qty ? fmt(p.cost / p.qty) : '–';
+  // 20-%-Regel: Bestand plus Kauf höchstens 20 % des Depotgesamtwerts
+  const tot = depotTotal(), val = p.cur === 'EUR' ? p.value : p.value / p.fx;
+  if (tot) {
+    const room = Math.max(0, tot.total * 0.2 - val);
+    $('dShare').textContent = pct(val / tot.total * 100).replace('+', '');
+    $('dShare').className = 'v' + (room < 1000 ? ' warn' : '');
+    $('dShareK').textContent = `Anteil am Depot · Nachkauf bis ${eur(room)}`;
+  }
   const t = tg[sym];
-  $('dTitle').textContent = t && p.cur === 'EUR' ? `Position · Tradegate ${eur(t.last)}` : `Position ${STOCKS[sym].short || sym} (fiktiv)`;
+  $('dTitle').textContent = t && p.cur === 'EUR' ? `Position · ${t.source || 'Tradegate'} ${eur(t.kurs)}` : `Position ${STOCKS[sym].short || sym} (fiktiv)`;
   const b = STOCKS[sym].bought && new Date(STOCKS[sym].bought);
   $('dDayK').textContent = p.today ? `Seit Kauf heute ${b.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}` : 'Heute';
   $('dPLk').textContent = p.fees ? `Gewinn / Verlust (inkl. ${fmt(p.fees)} Gebühren)` : 'Gewinn / Verlust';
 }
-// Gesamtdepot in Euro
-function renderTotal() {
+// Gesamtdepot in Euro (null, solange nicht alle Kurse da sind)
+function depotTotal() {
   let value = 0, paid = 0, pl = 0, fees = 0;
+  // Nachhaltigkeitsertrag: Kursgewinne/-verluste der nachhaltigen Papiere (offen + verkauft), ohne Gebühren
+  let green = REALIZED.green_pl || 0, hasGreen = !!REALIZED.green_pl;
   for (const s of SYMS) {
     if (!STOCKS[s]) continue;
-    const p = position(s); if (!p) return;
+    const p = position(s); if (!p) return null;
     const toEur = v => p.cur === 'EUR' ? v : v / p.fx;
     value += toEur(p.value); paid += toEur(p.cost + p.fees); pl += toEur(p.pl); fees += toEur(p.fees);
+    if (STOCKS[s].green === '1') { green += toEur(p.value - p.cost); hasGreen = true; }
   }
+  const cash = START_CAPITAL - paid + REALIZED.pl;
+  return { value, paid, pl, fees, cash, total: cash + value, green, hasGreen };
+}
+function renderTotal() {
+  const tot = depotTotal(); if (!tot) return;
+  let { value, paid, pl, fees, cash, green, hasGreen } = tot;
+  updateAddLimit();
   const cell = (k, v, cls = '') => `<div><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
   const ud = v => v >= 0 ? 'up' : 'down';
   if (view === 'split') document.title = `Depot ${eur(value)} ${pl >= 0 ? '▲' : '▼'}`;
   // realisierte Verkäufe: Gewinn fließt ins verfügbare Geld und in den Gesamtgewinn
   pl += REALIZED.pl; fees += REALIZED.fees;
-  const cash = START_CAPITAL - paid + REALIZED.pl, invested = paid + REALIZED.basis;
+  const invested = paid + REALIZED.basis;
   $('total').innerHTML =
     cell(`Gesamtvermögen (Start ${eur(START_CAPITAL)})`, eur(cash + value)) +
     cell('Verfügbares Geld', eur(cash)) +
@@ -657,7 +771,8 @@ function renderTotal() {
     cell('Gesamt Gewinn / Verlust', signed(pl, eur) + ` <span style="font-size:14px">(${pct(invested ? pl / invested * 100 : 0)})</span>`, ud(pl)) +
     cell('Gewinn / Verlust ohne Gebühren', signed(pl + fees, eur) + ` <span style="font-size:14px">(${pct(invested - fees ? (pl + fees) / (invested - fees) * 100 : 0)})</span>`, ud(pl + fees)) +
     cell('Bezahlt inkl. Gebühren', eur(paid)) +
-    (REALIZED.count ? cell(`Realisiert (${REALIZED.count} ${REALIZED.count > 1 ? 'Verkäufe' : 'Verkauf'})`, signed(REALIZED.pl, eur), ud(REALIZED.pl)) : '');
+    (REALIZED.count ? cell(`Realisiert (${REALIZED.count} ${REALIZED.count > 1 ? 'Verkäufe' : 'Verkauf'})`, signed(REALIZED.pl, eur), ud(REALIZED.pl)) : '') +
+    (hasGreen ? cell(`<span title="Kursgewinne/-verluste der nachhaltigen Papiere (*/**), ohne Gebühren${PLANSPIEL?.green_pl != null ? ` · Planspiel (Vortagesendstand): ${eur(PLANSPIEL.green_pl)}` : ''}">Nachhaltigkeitsertrag</span>`, signed(green, eur), ud(green)) : '');
 }
 
 // ---------- Aktie hinzufügen / entfernen ----------
@@ -665,21 +780,31 @@ function addMsg(t, err) { $('aMsg').textContent = t; $('aMsg').className = err ?
 $('aCancel').addEventListener('click', () => { $('addCard').hidden = true; addMsg(''); });
 // Kaufgebühr aus dem Gesamtpreis vorschlagen, bis man selbst etwas einträgt
 let buyFeeTouched = false;
-$('aCost').addEventListener('input', () => { if (!buyFeeTouched) $('aFee').value = orderFee(parseFloat($('aCost').value) || 0); });
+$('aCost').addEventListener('input', () => { if (!buyFeeTouched) $('aFee').value = orderFee(parseFloat($('aCost').value) || 0); updateAddLimit(); });
+$('aCur').addEventListener('change', updateAddLimit);
+// Planspiel lehnt Käufe über 20 % des Depotgesamtwerts ab; hier nur Hinweis, der Kauf ist ja schon passiert
+function updateAddLimit() {
+  const tot = depotTotal(); if (!tot) return $('aLimit').textContent = '';
+  const max = tot.total * 0.2, cost = parseFloat($('aCost').value) || 0;
+  const over = $('aCur').value === 'EUR' && cost > max;
+  $('aLimit').className = over ? 'warn' : '';
+  $('aLimit').textContent = (over ? '⚠ Über der 20-%-Grenze, das Planspiel würde den Kauf ablehnen. ' : '')
+    + `Höchstens ${eur(max)} je Wertpapier (20 % von ${eur(tot.total)} Depotgesamtwert).`;
+}
 $('aFee').addEventListener('input', () => buyFeeTouched = true);
 $('aQuery').addEventListener('keydown', e => { if (e.key === 'Enter') $('aAdd').click(); });
 $('aAdd').addEventListener('click', async () => {
   const query = $('aQuery').value.trim();
   if (!query) return addMsg('ISIN oder Kürzel eingeben', true);
   const values = { dQty: $('aQty').value || '0', dCost: $('aCost').value || '0', dCur: $('aCur').value,
-                   dFeeBuy: $('aFee').value || '0', dFeeSell: '0' };
+                   dFeeBuy: $('aFee').value || '0', dFeeSell: '0', green: $('aGreen').checked ? '1' : '' };
   $('aAdd').disabled = true; addMsg('suche …');
   const r = await api('/api/stock/add', { query, values }).catch(() => null);
   const j = r ? await r.json().catch(() => ({})) : {};
   $('aAdd').disabled = false;
   if (r?.status === 401) { editPw = null; lockInputs(); return alert('Passwort falsch.'); }
   if (!r?.ok) return addMsg(j.error || 'Hinzufügen fehlgeschlagen', true);
-  ['aQuery', 'aQty', 'aCost', 'aFee'].forEach(id => $(id).value = ''); buyFeeTouched = false;
+  ['aQuery', 'aQty', 'aCost', 'aFee'].forEach(id => $(id).value = ''); $('aGreen').checked = false; buyFeeTouched = false;
   $('addCard').hidden = true; addMsg('');
   sym = j.symbol; view = 'single'; store.set('tracker-sym', sym); store.set('tracker-view', view);
   applyStocks(j); showSym(); lockInputs(); load();
@@ -697,8 +822,8 @@ $('dDel').addEventListener('click', async () => {
 
 // ---------- Verkauf ----------
 // Planspiel-Gebühr für Aktien, Fonds und ETFs: 0,3 % vom Kurswert, mindestens 15 € (Kauf wie Verkauf).
-// Das Planspiel rundet auf den Cent auf (5.358 € -> 16,08 €); vorher Gleitkomma-Reste wegrunden
-const orderFee = v => v ? Math.max(15, Math.ceil(Math.round(v * 0.3 * 1e6) / 1e6) / 100).toFixed(2) : '';
+// Laut Handelstagebuch ungerundet (5.358 € -> 16,074 €); nur Gleitkomma-Reste wegrunden
+const orderFee = v => v ? String(Math.max(15, Math.round(v * 3e3) / 1e6)) : '';
 const sellFee = () => orderFee((parseFloat($('sQty').value) || 0) * (parseFloat($('sPrice').value) || 0));
 let feeTouched = false;
 $('dSell').addEventListener('click', () => {
